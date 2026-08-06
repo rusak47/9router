@@ -108,6 +108,11 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
       let valB = isLatencyField ? (b.latency || {})[sortBy] : b[sortBy];
       if (typeof valA === "string") valA = valA.toLowerCase();
       if (typeof valB === "string") valB = valB.toLowerCase();
+      // ponytail: models with no latency data stay pinned at the bottom in both directions
+      const aHasLatency = isLatencyField && (a.latency || {}).count > 0;
+      const bHasLatency = isLatencyField && (b.latency || {}).count > 0;
+      if (!aHasLatency && bHasLatency) return 1;
+      if (aHasLatency && !bHasLatency) return -1;
       if (valA < valB) return sortOrder === "asc" ? -1 : 1;
       if (valA > valB) return sortOrder === "asc" ? 1 : -1;
       return 0;
@@ -304,7 +309,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       .then((data) => {
         if (data) {
           hasLoadedStats.current = true;
-          setStats((prev) => ({ ...prev, ...data }));
+          setStats(data);
         }
       })
       .catch(() => {})
