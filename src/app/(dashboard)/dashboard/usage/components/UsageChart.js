@@ -46,11 +46,11 @@ export default function UsageChart({ period = "7d" }) {
     fetchData();
   }, [fetchData]);
 
-  const hasData = data.some((d) => d.tokens > 0 || d.cost > 0);
+  const hasData = data.some((d) => d.tokens > 0 || d.cost > 0 || d.ttft > 0 || d.totalLatency > 0);
 
   return (
     <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
-      <div className="grid w-full grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:w-auto sm:self-start">
+      <div className="grid w-full grid-cols-3 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:w-auto sm:self-start">
         <button
           onClick={() => setViewMode("tokens")}
           className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
@@ -62,6 +62,12 @@ export default function UsageChart({ period = "7d" }) {
           className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "cost" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
         >
           Cost
+        </button>
+        <button
+          onClick={() => setViewMode("latency")}
+          className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "latency" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+        >
+          Latency
         </button>
       </div>
 
@@ -81,6 +87,14 @@ export default function UsageChart({ period = "7d" }) {
                 <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.25} />
                 <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
               </linearGradient>
+              <linearGradient id="gradTTFT" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="gradTotal" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#ec4899" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#ec4899" stopOpacity={0} />
+              </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.1} />
             <XAxis
@@ -94,7 +108,7 @@ export default function UsageChart({ period = "7d" }) {
               tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.5 }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={viewMode === "tokens" ? fmtTokens : fmtCost}
+              tickFormatter={viewMode === "tokens" ? fmtTokens : viewMode === "cost" ? fmtCost : (v) => `${v}ms`}
               width={50}
             />
             <Tooltip
@@ -104,9 +118,11 @@ export default function UsageChart({ period = "7d" }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={(value, name) =>
-                name === "tokens" ? [fmtTokens(value), "Tokens"] : [fmtCost(value), "Cost"]
-              }
+              formatter={(value, name) => {
+                if (name === "tokens") return [fmtTokens(value), "Tokens"];
+                if (name === "cost") return [fmtCost(value), "Cost"];
+                return [`${value}ms`, name === "ttft" ? "TTFT" : "Total"];
+              }}
             />
             {viewMode === "tokens" ? (
               <Area
@@ -118,7 +134,7 @@ export default function UsageChart({ period = "7d" }) {
                 dot={false}
                 activeDot={{ r: 4 }}
               />
-            ) : (
+            ) : viewMode === "cost" ? (
               <Area
                 type="monotone"
                 dataKey="cost"
@@ -128,6 +144,29 @@ export default function UsageChart({ period = "7d" }) {
                 dot={false}
                 activeDot={{ r: 4 }}
               />
+            ) : (
+              <>
+                <Area
+                  type="monotone"
+                  dataKey="ttft"
+                  stroke="#8b5cf6"
+                  strokeWidth={2}
+                  fill="url(#gradTTFT)"
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  name="TTFT"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="totalLatency"
+                  stroke="#ec4899"
+                  strokeWidth={2}
+                  fill="url(#gradTotal)"
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  name="Total"
+                />
+              </>
             )}
           </AreaChart>
         </ResponsiveContainer>

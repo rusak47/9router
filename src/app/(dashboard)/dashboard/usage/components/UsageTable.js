@@ -32,6 +32,32 @@ SortIcon.propTypes = {
  * Render 3 token or cost cells based on viewMode
  */
 function ValueCells({ item, viewMode, isSummary = false }) {
+  if (viewMode === "latency") {
+    const lat = item.latency || {};
+    const hasLatency = lat.count > 0;
+    return (
+      <>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.avgTtft)}ms` : "—"}
+        </td>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.maxTtft)}ms` : "—"}
+        </td>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.minTtft)}ms` : "—"}
+        </td>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.avgTotal)}ms` : "—"}
+        </td>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.maxTotal)}ms` : "—"}
+        </td>
+        <td className="px-6 py-3 text-right text-text-muted">
+          {isSummary && !hasLatency ? "—" : hasLatency ? `${fmt(lat.minTotal)}ms` : "—"}
+        </td>
+      </>
+    );
+  }
   if (viewMode === "tokens") {
     return (
       <>
@@ -136,6 +162,16 @@ export default function UsageTable({
   }, []);
 
   const valueColumns = useMemo(() => {
+    if (viewMode === "latency") {
+      return [
+        { field: "avgTtft", label: "TTFT Avg" },
+        { field: "maxTtft", label: "TTFT Max" },
+        { field: "minTtft", label: "TTFT Min" },
+        { field: "avgTotal", label: "Total Avg" },
+        { field: "maxTotal", label: "Total Max" },
+        { field: "minTotal", label: "Total Min" },
+      ];
+    }
     if (viewMode === "tokens") {
       return [
         { field: "promptTokens", label: "Input Tokens" },
@@ -204,7 +240,7 @@ export default function UsageTable({
                     </div>
                   </td>
                   {renderSummaryCells(group)}
-                  <ValueCells item={group.summary} viewMode={viewMode} isSummary />
+                  <ValueCells key={`valcells-${viewMode}`} item={group.summary} viewMode={viewMode} isSummary />
                 </tr>
                 {/* Detail rows */}
                 {expanded.has(group.groupKey) && group.items.map((item) => (
@@ -213,7 +249,7 @@ export default function UsageTable({
                     className="group-detail hover:bg-bg-subtle/20 transition-colors"
                   >
                     {renderDetailCells(item)}
-                    <ValueCells item={item} viewMode={viewMode} />
+                    <ValueCells key={`valcells-${viewMode}`} item={item} viewMode={viewMode} />
                   </tr>
                 ))}
               </Fragment>
