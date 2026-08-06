@@ -70,8 +70,10 @@ function aggregateEntryToDay(day, entry) {
   day.requests = (day.requests || 0) + 1;
   day.promptTokens = (day.promptTokens || 0) + promptTokens;
   day.completionTokens = (day.completionTokens || 0) + completionTokens;
-  day.cachedTokens = (day.cachedTokens || 0) + cachedTokens;
   day.cost = (day.cost || 0) + cost;
+
+  day.ttftSum = (day.ttftSum || 0) + (entry.ttft || 0);
+  day.totalLatencySum = (day.totalLatencySum || 0) + (entry.totalLatency || 0);
 
   day.byProvider ||= {};
   day.byModel ||= {};
@@ -279,12 +281,13 @@ export async function saveRequestUsage(entry) {
       }
 
       db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, ttft, totalLatency) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
           stringifyJson(tokens), stringifyJson({}),
+          entry.ttft || 0, entry.totalLatency || 0,
         ]
       );
 
@@ -396,6 +399,7 @@ export async function getUsageStats(period = "all") {
     totalRequests: 0,
     totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
     byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
+    latencyByModel: {},
     last10Minutes: [],
     pending: pendingRequests,
     activeRequests: [],
@@ -655,6 +659,29 @@ export async function getUsageStats(period = "all") {
   }
 
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
+
+  // Latency aggregation per provider/model (avg/max/min from usageHistory)
+  const periodMs = { today: 86400000, "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
+  const cutoff = period !== "all" ? new Date(now - (periodMs[period] || 604800000)).toISOString() : null;
+  const latRows = db.all(
+    `SELECT provider, model, COUNT(*) as cnt, AVG(ttft) as avg_ttft, MAX(ttft) as max_ttft, MIN(ttft) as min_ttft, AVG(totalLatency) as avg_total, MAX(totalLatency) as max_total, MIN(totalLatency) as min_total FROM usageHistory WHERE (ttft > 0 OR totalLatency > 0)${cutoff ? " AND timestamp >= ?" : ""} GROUP BY provider, model`,
+    cutoff ? [cutoff] : []
+  );
+  for (const r of latRows) {
+    const provider = r.provider || "unknown";
+    const model = r.model || "unknown";
+    const modelKey = provider ? `${model} (${provider})` : model;
+    stats.latencyByModel[modelKey] = {
+      avgTtft: r.avg_ttft ? Math.round(r.avg_ttft) : 0,
+      maxTtft: r.max_ttft ? Math.round(r.max_ttft) : 0,
+      minTtft: r.min_ttft ? Math.round(r.min_ttft) : 0,
+      avgTotal: r.avg_total ? Math.round(r.avg_total) : 0,
+      maxTotal: r.max_total ? Math.round(r.max_total) : 0,
+      minTotal: r.min_total ? Math.round(r.min_total) : 0,
+      count: r.cnt,
+    };
+  }
+
   return stats;
 }
 
@@ -670,10 +697,10 @@ export async function getChartData(period = "7d") {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, ttft: 0, totalLatency: 0, ttftSum: 0, totalLatencySum: 0, requestCount: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+      `SELECT timestamp, promptTokens, completionTokens, cost, ttft, totalLatency FROM usageHistory WHERE timestamp >= ?`,
       [new Date(startTime).toISOString()]
     );
     for (const r of rows) {
@@ -683,9 +710,16 @@ export async function getChartData(period = "7d") {
       if (idx >= 0 && idx < bucketCount) {
         buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
         buckets[idx].cost += r.cost || 0;
+        buckets[idx].ttftSum += r.ttft || 0;
+        buckets[idx].totalLatencySum += r.totalLatency || 0;
+        buckets[idx].requestCount++;
       }
     }
-    return buckets;
+    return buckets.map(b => ({
+      ...b,
+      ttft: b.requestCount ? Math.round(b.ttftSum / b.requestCount) : 0,
+      totalLatency: b.requestCount ? Math.round(b.totalLatencySum / b.requestCount) : 0,
+    }));
   }
 
   if (period === "24h") {
@@ -693,10 +727,10 @@ export async function getChartData(period = "7d") {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, ttft: 0, totalLatency: 0, ttftSum: 0, totalLatencySum: 0, requestCount: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+      `SELECT timestamp, promptTokens, completionTokens, cost, ttft, totalLatency FROM usageHistory WHERE timestamp >= ?`,
       [new Date(startTime).toISOString()]
     );
     for (const r of rows) {
@@ -705,8 +739,15 @@ export async function getChartData(period = "7d") {
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
       buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
       buckets[idx].cost += r.cost || 0;
+      buckets[idx].ttftSum += r.ttft || 0;
+      buckets[idx].totalLatencySum += r.totalLatency || 0;
+      buckets[idx].requestCount++;
     }
-    return buckets;
+    return buckets.map(b => ({
+      ...b,
+      ttft: b.requestCount ? Math.round(b.ttftSum / b.requestCount) : 0,
+      totalLatency: b.requestCount ? Math.round(b.totalLatencySum / b.requestCount) : 0,
+    }));
   }
 
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
@@ -727,6 +768,8 @@ export async function getChartData(period = "7d") {
       label: labelFn(d),
       tokens: dayData ? (dayData.promptTokens || 0) + (dayData.completionTokens || 0) : 0,
       cost: dayData ? (dayData.cost || 0) : 0,
+      ttft: dayData && dayData.requests ? Math.round((dayData.ttftSum || 0) / dayData.requests) : 0,
+      totalLatency: dayData && dayData.requests ? Math.round((dayData.totalLatencySum || 0) / dayData.requests) : 0,
     };
   });
 }

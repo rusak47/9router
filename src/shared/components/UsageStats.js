@@ -87,6 +87,7 @@ function RecentRequests({ requests = [] }) {
 }
 
 function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
+  const isLatencyField = ["avgTtft", "maxTtft", "minTtft", "avgTotal", "maxTotal", "minTotal"].includes(sortBy);
   return Object.entries(dataMap || {})
     .map(([key, data]) => {
       const totalTokens = (data.promptTokens || 0) + (data.completionTokens || 0);
@@ -103,8 +104,8 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
       return { ...data, key, totalTokens, totalCost, inputCost, cachedCost, outputCost, pending: pendingMap[key] || 0 };
     })
     .sort((a, b) => {
-      let valA = a[sortBy];
-      let valB = b[sortBy];
+      let valA = isLatencyField ? (a.latency || {})[sortBy] : a[sortBy];
+      let valB = isLatencyField ? (b.latency || {})[sortBy] : b[sortBy];
       if (typeof valA === "string") valA = valA.toLowerCase();
       if (typeof valB === "string") valB = valB.toLowerCase();
       if (valA < valB) return sortOrder === "asc" ? -1 : 1;
@@ -149,7 +150,34 @@ function groupDataByKey(data, keyField) {
     if (item.lastUsed && (!s.lastUsed || new Date(item.lastUsed) > new Date(s.lastUsed))) {
       s.lastUsed = item.lastUsed;
     }
+    // Aggregate latency stats for summary
+    const lat = item.latency || {};
+    if (lat.count) {
+      s.latencySumTtft = (s.latencySumTtft || 0) + (lat.avgTtft || 0) * (item.requests || 1);
+      s.latencySumTotal = (s.latencySumTotal || 0) + (lat.avgTotal || 0) * (item.requests || 1);
+      s.latencyMaxTtft = Math.max(s.latencyMaxTtft || 0, lat.maxTtft || 0);
+      s.latencyMinTtft = s.latencyMinTtft === undefined ? lat.minTtft : Math.min(s.latencyMinTtft, lat.minTtft || Infinity);
+      s.latencyMaxTotal = Math.max(s.latencyMaxTotal || 0, lat.maxTotal || 0);
+      s.latencyMinTotal = s.latencyMinTotal === undefined ? lat.minTotal : Math.min(s.latencyMinTotal, lat.minTotal || Infinity);
+      s.latencyCount = (s.latencyCount || 0) + (item.requests || 1);
+    }
     groups[gk].items.push(item);
+  });
+
+  // Compute latency avg for summaries
+  Object.values(groups).forEach((g) => {
+    const s = g.summary;
+    if (s.latencyCount) {
+      s.latency = {
+        avgTtft: Math.round(s.latencySumTtft / s.latencyCount),
+        maxTtft: s.latencyMaxTtft || 0,
+        minTtft: s.latencyMinTtft || 0,
+        avgTotal: Math.round(s.latencySumTotal / s.latencyCount),
+        maxTotal: s.latencyMaxTotal || 0,
+        minTotal: s.latencyMinTotal || 0,
+        count: s.latencyCount,
+      };
+    }
   });
   return Object.values(groups);
 }
@@ -204,14 +232,24 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const sortBy = searchParams.get("sortBy") || "rawModel";
-  const sortOrder = searchParams.get("sortOrder") || "asc";
+  // Sort state initialized from URL, reset when viewMode changes
+  const [sortBy, setSortBy] = useState(() => searchParams.get("sortBy") || "rawModel");
+  const [sortOrder, setSortOrder] = useState(() => searchParams.get("sortOrder") || "asc");
 
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [tableView, setTableView] = useState("model");
   const [viewMode, setViewMode] = useState("costs");
+  const switchViewMode = useCallback((mode) => {
+    setViewMode(mode);
+    setSortBy("rawModel");
+    setSortOrder("asc");
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("sortBy");
+    params.delete("sortOrder");
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }, [searchParams, router]);
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
   const isInitialLoad = useRef(true);
@@ -308,8 +346,13 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const toggleSort = useCallback((tableType, field) => {
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("sortBy") === field) {
-      params.set("sortOrder", params.get("sortOrder") === "asc" ? "desc" : "asc");
+      const nextOrder = params.get("sortOrder") === "asc" ? "desc" : "asc";
+      setSortBy(field);
+      setSortOrder(nextOrder);
+      params.set("sortOrder", nextOrder);
     } else {
+      setSortBy(field);
+      setSortOrder("asc");
       params.set("sortBy", field);
       params.set("sortOrder", "asc");
     }
@@ -322,9 +365,17 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     switch (tableView) {
       case "model": {
         const pendingMap = stats.pending?.byModel || {};
+        const lats = stats.latencyByModel || {};
+        const allData = Object.entries(stats.byModel || {})
+          .map(([key, data]) => {
+            const lat = lats[key] || {};
+            return { ...data, key, latency: lat };
+          });
+        const sorted = sortData(allData, pendingMap, sortBy, sortOrder);
+        const grouped = groupDataByKey(sorted, "rawModel");
         return {
           columns: MODEL_COLUMNS,
-          groupedData: groupDataByKey(sortData(stats.byModel, pendingMap, sortBy, sortOrder), "rawModel"),
+          groupedData: grouped,
           storageKey: "usage-stats:expanded-models",
           emptyMessage: "No usage recorded yet.",
           renderSummaryCells: (group) => (
@@ -496,18 +547,24 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
-          <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
+          <div className="grid grid-cols-3 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
             <button
-              onClick={() => setViewMode("costs")}
+              onClick={() => switchViewMode("costs")}
               className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
             >
               Costs
             </button>
             <button
-              onClick={() => setViewMode("tokens")}
+              onClick={() => switchViewMode("tokens")}
               className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
             >
               Tokens
+            </button>
+            <button
+              onClick={() => switchViewMode("latency")}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "latency" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
+            >
+              Latency
             </button>
           </div>
         </div>
