@@ -246,21 +246,30 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [fetching, setFetching] = useState(false);
   const [tableView, setTableView] = useState("model");
   const [viewMode, setViewMode] = useState("costs");
-  const switchViewMode = useCallback((mode) => {
-    setViewMode(mode);
-    setSortBy("rawModel");
-    setSortOrder("asc");
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("sortBy");
-    params.delete("sortOrder");
-    router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router]);
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
+
+  // Sync periodProp from URL to local state
+  useEffect(() => {
+    if (periodProp && periodProp !== periodLocal) {
+      setPeriodLocal(periodProp);
+    }
+  }, [periodProp, periodLocal]);
+
+  const switchViewMode = useCallback((mode) => {
+    setViewMode(mode);
+    setSortBy("rawModel");
+    setSortOrder("asc");
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("period", period);
+    params.delete("sortBy");
+    params.delete("sortOrder");
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }, [searchParams, router, period]);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -350,6 +359,8 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
   const toggleSort = useCallback((tableType, field) => {
     const params = new URLSearchParams(searchParams.toString());
+    // Explicitly preserve current period (searchParams may be stale after manual period selection)
+    params.set("period", period);
     if (params.get("sortBy") === field) {
       const nextOrder = params.get("sortOrder") === "asc" ? "desc" : "asc";
       setSortBy(field);
@@ -362,7 +373,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       params.set("sortOrder", "asc");
     }
     router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router]);
+  }, [searchParams, router, period]);
 
   // Compute active table data
   const activeTableConfig = useMemo(() => {
