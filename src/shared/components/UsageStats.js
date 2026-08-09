@@ -214,6 +214,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
+  const [isPeriodChanging, setIsPeriodChanging] = useState(false);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
   const period = periodProp ?? periodLocal;
@@ -253,13 +254,16 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
   // Fetch filtered stats via REST when period changes
   useEffect(() => {
-    // First load: show full spinner; subsequent: show subtle fetching indicator
-    if (isInitialLoad.current) {
-      isInitialLoad.current = false;
-      setLoading(true);
-    } else {
-      setFetching(true);
-    }
+    Promise.resolve().then(() => {
+      setIsPeriodChanging(true);
+      // First load: show full spinner; subsequent: show subtle fetching indicator
+      if (isInitialLoad.current) {
+        isInitialLoad.current = false;
+        setLoading(true);
+      } else {
+        setFetching(true);
+      }
+    });
 
     fetch(`/api/usage/stats?period=${period}`)
       .then((r) => r.ok ? r.json() : null)
@@ -273,6 +277,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       .finally(() => {
         setLoading(false);
         setFetching(false);
+        setIsPeriodChanging(false);
       });
   }, [period]);
 
@@ -281,6 +286,9 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     const es = new EventSource("/api/usage/stream");
 
     es.onmessage = (e) => {
+      // Skip SSE updates during period changes to avoid stale data re-injection
+      if (isPeriodChanging) return;
+
       try {
         const data = JSON.parse(e.data);
         // Always merge only real-time fields, never overwrite full stats from REST
