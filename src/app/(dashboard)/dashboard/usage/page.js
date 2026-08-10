@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { UsageStats, RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
 import RequestDetailsTab from "./components/RequestDetailsTab";
@@ -25,7 +25,7 @@ function UsageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const [period, setPeriod] = useState("today");
+  const period = searchParams.get("period") || "today";
 
   const tabFromUrl = searchParams.get("tab");
   const activeTab = tabFromUrl && ["overview", "logs", "details"].includes(tabFromUrl)
@@ -37,6 +37,13 @@ function UsageContent() {
     const params = new URLSearchParams(searchParams);
     params.set("tab", value);
     router.push(`/dashboard/usage?${params.toString()}`, { scroll: false });
+  };
+
+  const handlePeriodChange = (value) => {
+    if (value === period) return;
+    const params = new URLSearchParams(searchParams);
+    params.set("period", value);
+    router.replace(`/dashboard/usage?${params.toString()}`, { scroll: false });
   };
 
   return (
@@ -56,7 +63,7 @@ function UsageContent() {
           <SegmentedControl
             options={PERIODS}
             value={period}
-            onChange={setPeriod}
+            onChange={handlePeriodChange}
             size="sm"
             className="w-full sm:w-auto"
           />
@@ -65,7 +72,7 @@ function UsageContent() {
 
       {activeTab === "overview" && (
         <Suspense fallback={<CardSkeleton />}>
-          <UsageStats period={period} setPeriod={setPeriod} hidePeriodSelector />
+          <UsageStats period={period} hidePeriodSelector />
         </Suspense>
       )}
       {activeTab === "logs" && <RequestLogger />}

@@ -88,8 +88,11 @@ function RecentRequests({ requests = [] }) {
 
 function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
   const isLatencyField = ["avgTtft", "maxTtft", "minTtft", "avgTotal", "maxTotal", "minTotal"].includes(sortBy);
-  return Object.entries(dataMap || {})
-    .map(([key, data]) => {
+  const isAlreadyArray = Array.isArray(dataMap);
+  const entries = isAlreadyArray ? dataMap : Object.entries(dataMap || {});
+  return entries
+    .map((entry) => {
+      const { key, data } = isAlreadyArray ? { key: entry.key, data: entry } : { key: entry[0], data: entry[1] };
       const totalTokens = (data.promptTokens || 0) + (data.completionTokens || 0);
       const totalCost = data.cost || 0;
       // ponytail: cost split is a token-share allocation of the (rate-accurate)
@@ -248,28 +251,28 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const [viewMode, setViewMode] = useState("costs");
   const [providers, setProviders] = useState([]);
   const [periodLocal, setPeriodLocal] = useState("today");
+  const [isPeriodChanging, setIsPeriodChanging] = useState(false);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
-  const period = periodProp ?? periodLocal;
+  const period = searchParams.get("period") || "today";
   const setPeriod = setPeriodProp ?? setPeriodLocal;
 
-  // Sync periodProp from URL to local state
-  useEffect(() => {
-    if (periodProp && periodProp !== periodLocal) {
-      setPeriodLocal(periodProp);
-    }
-  }, [periodProp, periodLocal]);
+  // Ref to always have current period for callbacks (avoids stale closure)
+  const periodRef = useRef(searchParams.get("period") || "today");
+  useEffect(() => { 
+    periodRef.current = searchParams.get("period") || "today"; 
+  }, [searchParams.get("period")]);
 
   const switchViewMode = useCallback((mode) => {
     setViewMode(mode);
     setSortBy("rawModel");
     setSortOrder("asc");
     const params = new URLSearchParams(searchParams.toString());
-    params.set("period", period);
+    params.set("period", periodRef.current);
     params.delete("sortBy");
     params.delete("sortOrder");
     router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router, period]);
+  }, [searchParams, router]);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -303,17 +306,26 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       .catch(() => {});
   }, []);
 
-  // Fetch filtered stats via REST when period changes
+  // Fetch filtered stats via REST when period OR sort changes
   useEffect(() => {
-    // First load: show full spinner; subsequent: show subtle fetching indicator
-    if (isInitialLoad.current) {
-      isInitialLoad.current = false;
+    // Defer state updates to avoid synchronous setState in effect body
+    Promise.resolve().then(() => {
+      setIsPeriodChanging(true);
       setLoading(true);
-    } else {
-      setFetching(true);
-    }
+      if (isInitialLoad.current) {
+        isInitialLoad.current = false;
+      } else {
+        setFetching(true);
+      }
+    });
 
-    fetch(`/api/usage/stats?period=${period}`)
+    const currentPeriod = searchParams.get("period") || "today";
+    const currentSortBy = searchParams.get("sortBy");
+    const currentSortOrder = searchParams.get("sortOrder");
+    const params = new URLSearchParams({ period: currentPeriod });
+    if (currentSortBy) params.set("sortBy", currentSortBy);
+    if (currentSortOrder) params.set("sortOrder", currentSortOrder);
+    fetch(`/api/usage/stats?${params}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data) {
@@ -325,14 +337,18 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       .finally(() => {
         setLoading(false);
         setFetching(false);
+        setIsPeriodChanging(false);
       });
-  }, [period]);
+  }, [searchParams.get("period"), searchParams.get("sortBy"), searchParams.get("sortOrder")]);
 
   // SSE connection - real-time updates for activeRequests + recentRequests only
   useEffect(() => {
     const es = new EventSource("/api/usage/stream");
 
     es.onmessage = (e) => {
+      // Skip SSE updates during period changes to avoid stale data re-injection
+      if (isPeriodChanging) return;
+
       try {
         const data = JSON.parse(e.data);
         // Always merge only real-time fields, never overwrite full stats from REST
@@ -359,8 +375,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
   const toggleSort = useCallback((tableType, field) => {
     const params = new URLSearchParams(searchParams.toString());
-    // Explicitly preserve current period (searchParams may be stale after manual period selection)
-    params.set("period", period);
+    params.set("period", periodRef.current);
     if (params.get("sortBy") === field) {
       const nextOrder = params.get("sortOrder") === "asc" ? "desc" : "asc";
       setSortBy(field);
@@ -373,7 +388,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       params.set("sortOrder", "asc");
     }
     router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router, period]);
+  }, [searchParams, router]);
 
   // Compute active table data
   const activeTableConfig = useMemo(() => {
@@ -586,6 +601,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         </div>
         {loading ? spinner : activeTableConfig && (
           <UsageTable
+            key={`${tableView}-${viewMode}-${searchParams.get("period") || "today"}`}
             title=""
             columns={activeTableConfig.columns}
             groupedData={activeTableConfig.groupedData}
