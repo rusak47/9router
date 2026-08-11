@@ -537,7 +537,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       )}
 
       {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
+      {loading ? spinner : <UsageChart period={period} tableView={tableView} />}
 
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
