@@ -107,11 +107,19 @@ export default function UsageChart({ period = "7d", tableView = "model" }) {
                   <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8} />
                   <stop offset="95%" stopColor="#6366f1" stopOpacity={0.3} />
                 </linearGradient>
-                <linearGradient id="gradP95" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                </linearGradient>
-              </defs>
+              <linearGradient id="gradP95" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8} />
+                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.3} />
+              </linearGradient>
+              <linearGradient id="gradTotalP50" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#ec4899" stopOpacity={0.8} />
+                <stop offset="95%" stopColor="#ec4899" stopOpacity={0.3} />
+              </linearGradient>
+              <linearGradient id="gradTotalP95" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.8} />
+                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0.3} />
+              </linearGradient>
+            </defs>
               <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.1} />
               <XAxis
                 dataKey="key"
@@ -145,6 +153,8 @@ export default function UsageChart({ period = "7d", tableView = "model" }) {
               <Legend wrapperStyle={{ fontSize: "12px" }} />
               <Bar dataKey="p50Ttft" name="TTFT P50" fill="url(#gradP50)" radius={[2, 2, 0, 0]} />
               <Bar dataKey="p95Ttft" name="TTFT P95" fill="url(#gradP95)" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="p50Total" name="Total P50" fill="url(#gradTotalP50)" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="p95Total" name="Total P95" fill="url(#gradTotalP95)" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )
