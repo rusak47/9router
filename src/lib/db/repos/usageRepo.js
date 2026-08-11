@@ -660,25 +660,44 @@ export async function getUsageStats(period = "all") {
 
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
 
+  // Helper to compute percentile from sorted array (0-indexed)
+  function percentile(sorted, pct) {
+    if (!sorted.length) return 0;
+    const idx = Math.ceil(pct / 100 * sorted.length) - 1;
+    return Math.round(sorted[Math.max(0, Math.min(idx, sorted.length - 1))]);
+  }
+
   // Latency aggregation per provider/model (avg/max/min from usageHistory)
   const periodMs = { today: 86400000, "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
   const cutoff = period !== "all" ? new Date(now - (periodMs[period] || 604800000)).toISOString() : null;
   const latRows = db.all(
-    `SELECT provider, model, COUNT(*) as cnt, AVG(ttft) as avg_ttft, MAX(ttft) as max_ttft, MIN(ttft) as min_ttft, AVG(totalLatency) as avg_total, MAX(totalLatency) as max_total, MIN(totalLatency) as min_total FROM usageHistory WHERE (ttft > 0 OR totalLatency > 0)${cutoff ? " AND timestamp >= ?" : ""} GROUP BY provider, model`,
+    `SELECT provider, model, ttft, totalLatency FROM usageHistory WHERE (ttft > 0 OR totalLatency > 0)${cutoff ? " AND timestamp >= ?" : ""}`,
     cutoff ? [cutoff] : []
   );
+  const modelGroups = {};
   for (const r of latRows) {
     const provider = r.provider || "unknown";
     const model = r.model || "unknown";
     const modelKey = provider ? `${model} (${provider})` : model;
-    stats.latencyByModel[modelKey] = {
-      avgTtft: r.avg_ttft ? Math.round(r.avg_ttft) : 0,
-      maxTtft: r.max_ttft ? Math.round(r.max_ttft) : 0,
-      minTtft: r.min_ttft ? Math.round(r.min_ttft) : 0,
-      avgTotal: r.avg_total ? Math.round(r.avg_total) : 0,
-      maxTotal: r.max_total ? Math.round(r.max_total) : 0,
-      minTotal: r.min_total ? Math.round(r.min_total) : 0,
-      count: r.cnt,
+    if (!modelGroups[modelKey]) modelGroups[modelKey] = { ttfts: [], totals: [] };
+    if (r.ttft) modelGroups[modelKey].ttfts.push(r.ttft);
+    if (r.totalLatency) modelGroups[modelKey].totals.push(r.totalLatency);
+  }
+  for (const [key, vals] of Object.entries(modelGroups)) {
+    const ttftsSorted = vals.ttfts.sort((a, b) => a - b);
+    const totalsSorted = vals.totals.sort((a, b) => a - b);
+    stats.latencyByModel[key] = {
+      avgTtft: ttftsSorted.length ? Math.round(ttftsSorted.reduce((a, b) => a + b, 0) / ttftsSorted.length) : 0,
+      maxTtft: ttftsSorted.length ? ttftsSorted[ttftsSorted.length - 1] : 0,
+      minTtft: ttftsSorted.length ? ttftsSorted[0] : 0,
+      p50Ttft: percentile(ttftsSorted, 50),
+      p95Ttft: percentile(ttftsSorted, 95),
+      avgTotal: totalsSorted.length ? Math.round(totalsSorted.reduce((a, b) => a + b, 0) / totalsSorted.length) : 0,
+      maxTotal: totalsSorted.length ? totalsSorted[totalsSorted.length - 1] : 0,
+      minTotal: totalsSorted.length ? totalsSorted[0] : 0,
+      p50Total: percentile(totalsSorted, 50),
+      p95Total: percentile(totalsSorted, 95),
+      count: ttftsSorted.length,
     };
   }
 

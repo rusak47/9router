@@ -174,3 +174,36 @@ describe("usageRepo latency", () => {
     }
   });
 });
+
+describe("usageRepo latency percentiles", () => {
+  it("getUsageStats returns p50Ttft and p95Ttft per model", async () => {
+    const { saveRequestUsage, getUsageStats } = await import("@/lib/db/repos/usageRepo.js");
+
+    // Insert 5 requests with ttft values: 100, 200, 300, 400, 500
+    const now = new Date();
+    const base = now.getTime() - 3600000; // 1 hour ago
+    for (let i = 0; i < 5; i++) {
+      await saveRequestUsage({
+        timestamp: new Date(base + i * 1000).toISOString(),
+        provider: "openai",
+        model: "gpt-4",
+        tokens: { prompt_tokens: 100, completion_tokens: 50 },
+        cost: 0.01,
+        ttft: 100 + i * 100,
+        totalLatency: 200 + i * 100,
+      });
+    }
+
+    const stats = await getUsageStats("24h");
+    const modelKey = "gpt-4 (openai)";
+    expect(stats.latencyByModel[modelKey]).toBeDefined();
+    const lat = stats.latencyByModel[modelKey];
+    // P50 of [100,200,300,400,500] = 300 (index 2, 0-based)
+    // P95 of [100,200,300,400,500] = 500 (index 4, ceil(5*0.95)-1 = 4)
+    expect(lat.p50Ttft).toBe(300);
+    expect(lat.p95Ttft).toBe(500);
+    // P50 of [200,300,400,500,600] = 400
+    expect(lat.p50Total).toBe(400);
+    expect(lat.p95Total).toBe(600);
+  });
+});

@@ -165,11 +165,13 @@ export default function UsageTable({
     if (viewMode === "latency") {
       return [
         { field: "avgTtft", label: "TTFT Avg" },
+        { field: "p50Ttft", label: "TTFT P50" },
+        { field: "p95Ttft", label: "TTFT P95" },
         { field: "maxTtft", label: "TTFT Max" },
-        { field: "minTtft", label: "TTFT Min" },
         { field: "avgTotal", label: "Total Avg" },
+        { field: "p50Total", label: "Total P50" },
+        { field: "p95Total", label: "Total P95" },
         { field: "maxTotal", label: "Total Max" },
-        { field: "minTotal", label: "Total Min" },
       ];
     }
     if (viewMode === "tokens") {
