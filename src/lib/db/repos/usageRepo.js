@@ -834,36 +834,3 @@ export async function getRecentLogs(limit = 200) {
 }
 
 // Latency distribution for bar chart: P50/P95 grouped by model or provider
-export async function getLatencyDistribution(period = "7d", groupBy = "model") {
-  const db = await getAdapter();
-  const periodMs = { today: 86400000, "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
-  const cutoff = period !== "all" ? new Date(Date.now() - (periodMs[period] || 604800000)).toISOString() : null;
-
-  const groupCol = groupBy === "provider" ? "provider" : "model";
-  const rows = db.all(
-    `SELECT ${groupCol}, ttft, totalLatency FROM usageHistory WHERE (ttft > 0 OR totalLatency > 0)${cutoff ? " AND timestamp >= ?" : ""}`,
-    cutoff ? [cutoff] : []
-  );
-
-  const groups = {};
-  for (const r of rows) {
-    const key = r[groupCol] || "unknown";
-    if (!groups[key]) groups[key] = { ttfts: [], totals: [] };
-    if (r.ttft) groups[key].ttfts.push(r.ttft);
-    if (r.totalLatency) groups[key].totals.push(r.totalLatency);
-  }
-
-  function percentile(sorted, pct) {
-    if (!sorted.length) return 0;
-    const idx = Math.ceil(pct / 100 * sorted.length) - 1;
-    return Math.round(sorted[Math.max(0, Math.min(idx, sorted.length - 1))]);
-  }
-
-  return Object.entries(groups).map(([key, vals]) => ({
-    key,
-    p50Ttft: percentile(vals.ttfts.sort((a, b) => a - b), 50),
-    p95Ttft: percentile(vals.ttfts.sort((a, b) => a - b), 95),
-    p50Total: percentile(vals.totals.sort((a, b) => a - b), 50),
-    p95Total: percentile(vals.totals.sort((a, b) => a - b), 95),
-  })).sort((a, b) => b.p95Ttft - a.p95Ttft);
-}
