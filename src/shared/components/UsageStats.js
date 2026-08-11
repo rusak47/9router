@@ -164,6 +164,19 @@ function groupDataByKey(data, keyField) {
       s.latencyMinTtft = s.latencyMinTtft === undefined ? lat.minTtft : Math.min(s.latencyMinTtft, lat.minTtft || Infinity);
       s.latencyMaxTotal = Math.max(s.latencyMaxTotal || 0, lat.maxTotal || 0);
       s.latencyMinTotal = s.latencyMinTotal === undefined ? lat.minTotal : Math.min(s.latencyMinTotal, lat.minTotal || Infinity);
+      // Track all latency values for percentile computation
+      if (lat.p50Ttft !== undefined) {
+        (s.latencyP50TtftValues ||= []).push(lat.p50Ttft);
+      }
+      if (lat.p95Ttft !== undefined) {
+        (s.latencyP95TtftValues ||= []).push(lat.p95Ttft);
+      }
+      if (lat.p50Total !== undefined) {
+        (s.latencyP50TotalValues ||= []).push(lat.p50Total);
+      }
+      if (lat.p95Total !== undefined) {
+        (s.latencyP95TotalValues ||= []).push(lat.p95Total);
+      }
       s.latencyCount = (s.latencyCount || 0) + (item.requests || 1);
     }
     groups[gk].items.push(item);
@@ -173,13 +186,21 @@ function groupDataByKey(data, keyField) {
   Object.values(groups).forEach((g) => {
     const s = g.summary;
     if (s.latencyCount) {
+      const p50TtftVals = (s.latencyP50TtftValues || []).filter((v) => v > 0);
+      const p95TtftVals = (s.latencyP95TtftValues || []).filter((v) => v > 0);
+      const p50TotalVals = (s.latencyP50TotalValues || []).filter((v) => v > 0);
+      const p95TotalVals = (s.latencyP95TotalValues || []).filter((v) => v > 0);
       s.latency = {
         avgTtft: Math.round(s.latencySumTtft / s.latencyCount),
         maxTtft: s.latencyMaxTtft || 0,
         minTtft: s.latencyMinTtft || 0,
+        p50Ttft: p50TtftVals.length ? Math.round(p50TtftVals.reduce((a, b) => a + b, 0) / p50TtftVals.length) : 0,
+        p95Ttft: p95TtftVals.length ? Math.round(p95TtftVals.reduce((a, b) => a + b, 0) / p95TtftVals.length) : 0,
         avgTotal: Math.round(s.latencySumTotal / s.latencyCount),
         maxTotal: s.latencyMaxTotal || 0,
         minTotal: s.latencyMinTotal || 0,
+        p50Total: p50TotalVals.length ? Math.round(p50TotalVals.reduce((a, b) => a + b, 0) / p50TotalVals.length) : 0,
+        p95Total: p95TotalVals.length ? Math.round(p95TotalVals.reduce((a, b) => a + b, 0) / p95TotalVals.length) : 0,
         count: s.latencyCount,
       };
     }
