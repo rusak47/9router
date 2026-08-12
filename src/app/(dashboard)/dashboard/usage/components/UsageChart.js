@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, startTransition } from "react";
 import PropTypes from "prop-types";
 import {
   AreaChart,
@@ -23,7 +23,15 @@ const fmtTokens = (n) => {
 
 const fmtCost = (n) => `$${(n || 0).toFixed(4)}`;
 
-function buildLatencyData(latencyByModel, groupBy) {
+const LOG_TICKS = [100, 300, 1000, 3000, 10000, 30000, 100000];
+const logTicks = LOG_TICKS.map((v) => Math.log10(v));
+
+const fmtLatencyLabel = (v) => {
+  const ms = Math.round(Math.pow(10, v));
+  return ms >= 1000 ? `${ms / 1000}s` : `${ms}ms`;
+};
+
+function buildLatencyData(latencyByModel, metric = "total") {
   const source = latencyByModel || {};
   const entries = Object.entries(source).map(([key, lat]) => ({
     key,
@@ -34,44 +42,96 @@ function buildLatencyData(latencyByModel, groupBy) {
     count: lat.count || 0,
   }));
 
-  const MIN_COUNT = 5;
+  const MIN_COUNT = 10;
   const noisy = entries.filter((e) => e.count < MIN_COUNT);
-  const filtered = entries.filter((e) => e.count >= MIN_COUNT);
+  const log10 = (v) => Math.log10(Math.max(1, v));
 
-  filtered.sort((a, b) => b.p95Total - a.p95Total);
+  const rows = entries
+    .filter((e) => e.count >= MIN_COUNT)
+    .map((e) => {
+      const p50 = metric === "ttft" ? e.p50Ttft : e.p50Total;
+      const p95 = metric === "ttft" ? e.p95Ttft : e.p95Total;
+      return { ...e, p50Log: log10(p50), p95Log: log10(p95) };
+    })
+    .sort((a, b) => b.p95Total - a.p95Total);
 
-  const p95Values = filtered.map((e) => e.p95Total).filter((v) => v > 0);
-  const sorted = p95Values.sort((a, b) => a - b);
-  let yCap = null;
-  if (sorted.length > 3) {
-    const p99Idx = Math.min(Math.ceil(0.99 * sorted.length) - 1, sorted.length - 1);
-    yCap = Math.max(sorted[p99Idx], sorted[sorted.length - 1] * 0.3);
-  }
+  const allLogs = rows.flatMap((r) => [r.p50Log, r.p95Log]);
+  const domainMin = allLogs.length ? Math.min(...allLogs) : log10(100);
+  const domainMax = Math.max(...allLogs, log10(1000));
 
-  return { filtered, noisy, yCap, excluded: noisy.length };
+  const data = rows.map((r) => ({ ...r, domainMin }));
+  const ticks = logTicks.filter((t) => t >= domainMin - 0.1 && t <= domainMax + 0.1);
+
+  return { data, noisy, domain: [domainMin, domainMax], ticks, excluded: noisy.length };
 }
 
-const CustomTooltip = ({ active, payload, label }) => {
+const RangeShape = (props) => {
+  const { x, y, width, height, payload } = props;
+  const { p50Log, p95Log, domainMin } = payload;
+  if (width <= 0 || height <= 0) return null;
+  const totalLog = p95Log - domainMin;
+  if (totalLog <= 0) return null;
+  const x0 = x + width * ((p50Log - domainMin) / totalLog);
+  const visWidth = Math.max(0, x + width - x0);
+  if (visWidth <= 0) return null;
+  return (
+    <>
+      <rect
+        x={x0}
+        y={y}
+        width={visWidth}
+        height={height}
+        rx={4}
+        ry={4}
+        fill="#93c5fd"
+      />
+      <circle
+        cx={x + width}
+        cy={y + height / 2}
+        r={3.5}
+        fill="#1e40af"
+      />
+    </>
+  );
+};
+
+RangeShape.propTypes = {
+  x: PropTypes.number.isRequired,
+  y: PropTypes.number.isRequired,
+  width: PropTypes.number.isRequired,
+  height: PropTypes.number.isRequired,
+  payload: PropTypes.object,
+};
+
+const CustomTooltip = ({ active, payload, label, metric = "total" }) => {
   if (!active || !payload || !payload.length) return null;
   const entry = payload[0].payload;
-  const items = [
-    ["TTFT P50", entry.p50Ttft, entry.count],
-    ["TTFT P95", entry.p95Ttft, entry.count],
-    ["Total P50", entry.p50Total, entry.count],
-    ["Total P95", entry.p95Total, entry.count],
-  ];
+  const p50 = metric === "ttft" ? entry.p50Ttft : entry.p50Total;
+  const p95 = metric === "ttft" ? entry.p95Ttft : entry.p95Total;
   return (
     <div className="rounded-lg border border-border bg-bg px-3 py-2 shadow-lg text-xs">
       <p className="font-medium mb-1">{label}</p>
-      {items
-        .filter(([, v]) => v > 0)
-        .map(([name, v, n]) => (
-          <div key={name} className="flex items-baseline gap-2">
-            <span className="text-text-muted">{name}</span>
-            <span className="font-mono">{v}ms</span>
-            <span className="text-text-muted">n={n}</span>
-          </div>
-        ))}
+      <div className="flex items-baseline gap-2">
+        <span className="text-text-muted">P50</span>
+        <span className="font-mono">{p50}ms</span>
+        <span className="text-text-muted">→</span>
+        <span className="font-mono">{p95}ms</span>
+        <span className="text-text-muted">({entry.count})</span>
+      </div>
+      <div className="mt-1 pt-1 border-t border-border/50">
+        <div className="flex items-baseline gap-2">
+          <span className="text-text-muted">TTFT P50</span>
+          <span className="font-mono">{entry.p50Ttft}ms</span>
+          <span className="text-text-muted">P95</span>
+          <span className="font-mono">{entry.p95Ttft}ms</span>
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-text-muted">Total P50</span>
+          <span className="font-mono">{entry.p50Total}ms</span>
+          <span className="text-text-muted">P95</span>
+          <span className="font-mono">{entry.p95Total}ms</span>
+        </div>
+      </div>
     </div>
   );
 };
@@ -80,57 +140,14 @@ CustomTooltip.propTypes = {
   active: PropTypes.bool,
   payload: PropTypes.array,
   label: PropTypes.string,
-};
-
-function LatencySection({ title, data, yCap, dataKeyP50, dataKeyP95, colorP50, colorP95 }) {
-  if (!data.length) {
-    return (
-      <div className="h-44 flex items-center justify-center text-text-muted text-sm">No latency data</div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-1">
-      <ResponsiveContainer width="100%" height={180}>
-        <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.1} />
-          <XAxis
-            dataKey="key"
-            tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.6 }}
-            tickLine={false}
-            axisLine={false}
-            interval="preserveStartEnd"
-          />
-          <YAxis
-            tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.6 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v) => `${v}ms`}
-            width={50}
-            domain={yCap ? [0, yCap] : [0, "auto"]}
-          />
-          <Tooltip content={<CustomTooltip />} />
-          <Bar dataKey={dataKeyP50} name="P50" fill={colorP50} radius={[2, 2, 0, 0]} />
-          <Bar dataKey={dataKeyP95} name="P95" fill={colorP95} radius={[2, 2, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-LatencySection.propTypes = {
-  title: PropTypes.string.isRequired,
-  data: PropTypes.array.isRequired,
-  yCap: PropTypes.number,
-  dataKeyP50: PropTypes.string.isRequired,
-  dataKeyP95: PropTypes.string.isRequired,
-  colorP50: PropTypes.string.isRequired,
-  colorP95: PropTypes.string.isRequired,
+  metric: PropTypes.string,
 };
 
 export default function UsageChart({ period = "7d", tableView = "model", stats }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState("tokens");
+  const [latencyMetric, setLatencyMetric] = useState("total");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -138,7 +155,7 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
       const res = await fetch(`/api/usage/chart?period=${period}`);
       if (res.ok) {
         const json = await res.json();
-        setData(json);
+        startTransition(() => setData(json));
       }
     } catch (e) {
       console.error("Failed to fetch chart data:", e);
@@ -147,13 +164,20 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
     }
   }, [period]);
 
-  useEffect(() => {
-    fetchData();
+  useLayoutEffect(() => {
+    const id = setTimeout(() => fetchData(), 0);
+    return () => clearTimeout(id);
   }, [fetchData]);
 
-  const latency = useMemo(() => buildLatencyData(stats?.latencyByModel, tableView), [stats, tableView]);
+  const latency = useMemo(
+    () => buildLatencyData(stats?.latencyByModel, latencyMetric),
+    [stats, latencyMetric],
+  );
 
   const hasData = data.some((d) => d.tokens > 0 || d.cost > 0);
+  const chartHeight = latency.data.length > 0
+    ? Math.max(140, latency.data.length * 22 + 50)
+    : 140;
 
   return (
     <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
@@ -181,21 +205,148 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
       {loading ? (
         <div className="h-48 flex items-center justify-center text-text-muted text-sm">Loading...</div>
       ) : viewMode === "latency" ? (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-text-muted">TTFT (Time To First Token)</span>
-            <LatencySection data={latency.filtered} yCap={latency.yCap} dataKeyP50="p50Ttft" dataKeyP95="p95Ttft" colorP50="#6366f1" colorP95="#818cf8" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-text-muted">Total Latency (full response)</span>
-            <LatencySection data={latency.filtered} yCap={latency.yCap} dataKeyP50="p50Total" dataKeyP95="p95Total" colorP50="#f59e0b" colorP95="#fbbf24" />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-text-muted">
+                Latency distribution
+              </span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setLatencyMetric("total")}
+                  className={`px-2 py-1 text-xs font-medium transition-colors ${
+                    latencyMetric === "total"
+                      ? "bg-primary text-white"
+                      : "text-text-muted hover:text-text hover:bg-bg-hover"
+                  }`}
+                >
+                  Total
+                </button>
+                <button
+                  onClick={() => setLatencyMetric("ttft")}
+                  className={`px-2 py-1 text-xs font-medium transition-colors ${
+                    latencyMetric === "ttft"
+                      ? "bg-primary text-white"
+                      : "text-text-muted hover:text-text hover:bg-bg-hover"
+                  }`}
+                >
+                  TTFT
+                </button>
+              </div>
+            </div>
+            {latency.data.length > 0 ? (
+              <div className="flex items-center gap-4 text-xs text-text-muted">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-3 h-3 rounded-sm bg-[#93c5fd]"></span>
+                  P50–P95
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-[#1e40af]"></span>
+                  P95
+                </span>
+                <span className="ml-auto text-text-muted">
+                  Sorted by {latencyMetric === "ttft" ? "TTFT" : "Total"} P95
+                </span>
+              </div>
+            ) : (
+              <div className="h-10 flex items-center text-text-muted text-xs">
+                No latency data for this period
+              </div>
+            )}
+            <div
+              role="img"
+              aria-label={`Latency range chart showing P50 to P95 per model, sorted by worst tail latency first. ${latency.data.length} models above threshold.`}
+            >
+              <ResponsiveContainer key={period} width="100%" height={chartHeight}>
+                <BarChart
+                  data={latency.data}
+                  layout="vertical"
+                  margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
+                  barSize={18}
+                >
+                  <defs>
+                    <linearGradient id="latencyGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#bfdbfe" />
+                      <stop offset="80%" stopColor="#60a5fa" />
+                      <stop offset="100%" stopColor="#1e40af" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    strokeOpacity={0.1}
+                    horizontal={false}
+                  />
+                  <XAxis
+                    type="number"
+                    domain={latency.domain}
+                    ticks={latency.ticks}
+                    tickFormatter={fmtLatencyLabel}
+                    tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.6 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={48}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="key"
+                    tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.8 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={150}
+                  />
+                  <Tooltip
+                    content={<CustomTooltip metric={latencyMetric} />}
+                    cursor={{ fill: "transparent" }}
+                  />
+                  <Bar
+                    dataKey="p95Log"
+                    fill="url(#latencyGrad)"
+                    shape={<RangeShape />}
+                    isAnimationActive={false}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
           {latency.excluded > 0 && (
-            <span className="text-xs text-text-muted">Excluding {latency.excluded} low-volume models (&lt;{5} requests)</span>
+            <div className="rounded-lg border border-border overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="px-3 py-1 text-left text-text-muted font-medium">
+                      Model
+                    </th>
+                    <th className="px-3 py-1 text-right text-text-muted font-medium">
+                      Requests
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {latency.noisy.map((e) => (
+                    <tr
+                      key={e.key}
+                      className="border-b border-border/50 last:border-0 hover:bg-bg-hover/50"
+                    >
+                      <td className="px-3 py-1 truncate max-w-[200px]" title={e.key}>
+                        {e.key}
+                      </td>
+                      <td className="px-3 py-1 text-right text-text-muted">
+                        {e.count}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="px-3 py-1 text-text-muted text-xs bg-bg-subtle">
+                {latency.excluded} low-volume models excluded (below 10 requests)
+              </div>
+            </div>
           )}
         </div>
       ) : !hasData ? (
-        <div className="h-48 flex items-center justify-center text-text-muted text-sm">No data for this period</div>
+        <div className="h-48 flex items-center justify-center text-text-muted text-sm">
+          No data for this period
+        </div>
       ) : (
         <ResponsiveContainer width="100%" height={220}>
           <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
