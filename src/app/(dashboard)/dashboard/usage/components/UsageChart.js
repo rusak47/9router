@@ -150,7 +150,7 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
     [stats, latencyMetric],
   );
 
-  const hasData = data.some((d) => (d[cfg.dataKey] || 0) > 0);
+  const hasData = viewMode !== "latency" && data.some((d) => (d[cfg.dataKey] || 0) > 0);
   const chartHeight = latency.data.length > 0
     ? Math.max(140, latency.data.length * 22 + 50)
     : 140;
