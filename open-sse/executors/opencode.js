@@ -96,7 +96,7 @@ function resolveOpencodeSession(body, credentials) {
   }
   // Ultimate fallback: use upstream session manager
   return resolveSessionId({
-    headers,
+    headers: raw,
     body,
     connectionId: credentials?.connectionId,
     scope: "opencode",
@@ -176,7 +176,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamUa = lower["user-agent"] || "";
     const isOpencodeDownstream = downstreamUa.toLowerCase().includes("opencode");
 
-    const key = credentials?.apiKey;
+const key = credentials?.apiKey;
 
     // OpenCode Zen's free tier is IP-based (ipRateLimiter.ts: headers.get("x-real-ip")
     // reads the real egress IP). CDN sets x-real-ip to TCP client-supplied IP so
@@ -188,7 +188,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const rawIp = (lower["x-9r-real-ip"] || lower["x-real-ip"] || "").trim();
     const clientIp = rawIp && !isPrivateIp(rawIp) ? rawIp : (rawIp ? discoverPublicIp() : "");
 
-    return {
+      return {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${key || "public"}`,
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
