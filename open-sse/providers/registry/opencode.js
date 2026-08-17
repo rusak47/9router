@@ -10,14 +10,14 @@ export default {
     color: "#E87040",
     textIcon: "OC",
   },
-  category: "free",
-  noAuth: true,
+  category: "apikey",
+  authType: "apikey",
+  authModes: ["apikey"],
   transport: {
     baseUrl: "https://opencode.ai",
     headers: {
       "x-opencode-client": "desktop",
     },
-    noAuth: true,
   },
   models: [],
   modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" },
