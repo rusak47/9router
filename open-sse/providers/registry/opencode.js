@@ -10,15 +10,15 @@ export default {
     color: "#E87040",
     textIcon: "OC",
   },
-  category: "free",
-  noAuth: true,
+  category: "apikey",
+  authType: "apikey",
+  authModes: ["apikey"],
   transport: {
     baseUrl: "https://opencode.ai",
     headers: {
       "x-opencode-client": "desktop",
     },
     forceStream: true,
-    noAuth: true,
     quirks: {
       forceAutoToolChoiceModels: ["muse-spark-1.3-contributor-free"],
     },

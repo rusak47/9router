@@ -607,7 +607,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamReq = normalizeRequestId(lower["x-opencode-request"]);
     const requestId = credentials?.[REQ_FIELD] || downstreamReq || generateRequestId();
 
-    const key = credentials?.apiKey;
+const key = credentials?.apiKey;
 
     // OpenCode Zen's free tier is IP-based (ipRateLimiter.ts: headers.get("x-real-ip")
     // reads the real egress IP). CDN sets x-real-ip to TCP client-supplied IP so
