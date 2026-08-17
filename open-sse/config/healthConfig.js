@@ -28,6 +28,8 @@ export const HEALTH_DEFAULTS = {
   circuitErrorRate: 0.5,
   circuitMinSamples: 4,
   circuitCooldownMs: 60 * 1000,
+  // Backoff factor for consecutive failures (each streak multiplies cooldown)
+  circuitBackoffFactor: 2.0,
   // Samples older than this are ignored — routing follows *current* conditions
   sampleTtlMs: 15 * 60 * 1000,
 };
@@ -43,6 +45,7 @@ export const HEALTH_LIMITS = {
   circuitErrorRate: { min: 0.1, max: 1 },
   circuitMinSamples: { min: 2, max: 100 },
   circuitCooldownMs: { min: 1000, max: 30 * 60 * 1000 },
+  circuitBackoffFactor: { min: 1.0, max: 10.0 },
   sampleTtlMs: { min: 60 * 1000, max: 24 * 60 * 60 * 1000 },
 };
 
