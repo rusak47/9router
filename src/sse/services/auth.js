@@ -3,7 +3,7 @@ import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/con
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { LATENCY_AWARE_STRATEGY } from "open-sse/config/healthConfig.js";
-import { selectHealthiestConnection } from "open-sse/services/healthTracker.js";
+import { selectHealthiestConnection, warmConnectionHistory } from "open-sse/services/healthTracker.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
@@ -86,6 +86,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
+    await warmConnectionHistory(connections, model);
     connections.forEach(c => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
