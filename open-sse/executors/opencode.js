@@ -520,19 +520,19 @@ export class OpenCodeExecutor extends BaseExecutor {
     return super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
   }
 
-  buildUrl(model) {
-    const base = this.config.baseUrl;
-    if (isResponsesModel(model)) return `${base}/zen/v1/responses`;
-    if (isMessagesModel(model)) return `${base}/zen/v1/messages`;
-    return `${base}/zen/v1/chat/completions`;
-  }
-
   // OpenCode Zen's free tier rate-limits per real egress IP (daily
   // budget per IP, reset at UTC midnight). No automatic switching:
   // when current IP's budget is exhausted gateway answers
   // 429 FreeUsageLimitError — user picks another node/egress manually.
   async execute(args) {
     return super.execute(args);
+  }
+
+  buildUrl(model) {
+    const base = this.config.baseUrl;
+    if (isResponsesModel(model)) return `${base}/zen/v1/responses`;
+    if (isMessagesModel(model)) return `${base}/zen/v1/messages`;
+    return `${base}/zen/v1/chat/completions`;
   }
 
   buildHeaders(credentials, stream = true, url = "") {
@@ -547,7 +547,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamReq = normalizeRequestId(lower["x-opencode-request"]);
     const requestId = credentials?.[REQ_FIELD] || downstreamReq || generateRequestId();
 
-    const key = credentials?.apiKey;
+const key = credentials?.apiKey;
 
     // OpenCode Zen's free tier is IP-based (ipRateLimiter.ts: headers.get("x-real-ip")
     // reads the real egress IP). CDN sets x-real-ip to TCP client-supplied IP so
