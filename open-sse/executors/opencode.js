@@ -56,15 +56,16 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamUa = lower["user-agent"] || "";
     const isOpencodeDownstream = downstreamUa.toLowerCase().includes("opencode");
 
+    const key = credentials?.apiKey;
     return {
       "Content-Type": "application/json",
-      "Authorization": "Bearer public",
+      "Authorization": `Bearer ${key || "public"}`,
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
       "x-opencode-client": lower["x-opencode-client"] || "desktop",
       "x-opencode-session": lower["x-opencode-session"] || this._currentSessionId || generateSessionId(),
       "x-opencode-request": lower["x-opencode-request"] || generateRequestId(),
       "x-opencode-project": lower["x-opencode-project"] || "global",
-      "Accept": stream ? "text/event-stream" : "*/*",
+      "Accept": stream ? "text/event-stream" : "*/*",      
     };
   }
 }
