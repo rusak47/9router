@@ -1,0 +1,107 @@
+[
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 8408,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:37:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 8117,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:38:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 11707,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:39:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 11870,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:40:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 6021,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:41:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 22310,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:42:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 6692,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:43:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 13227,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:44:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 27036,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:45:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 10344,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:46:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 7327,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:47:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 5555,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:48:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 5027,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:49:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 4716,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:50:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 4088,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:51:22.000Z"
+  }
+]
