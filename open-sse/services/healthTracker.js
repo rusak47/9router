@@ -378,16 +378,25 @@ async function seedFromHistory(connectionId, provider = null, model = null, inje
 
     const keys = [buildHealthKey(connectionId)];
     if (model) keys.push(buildHealthKey(connectionId, model));
-
+    
     if (!injectedDb) {
-      console.debug(`[seedFromHistory] skip - no db connection=${connectionId}`);
-      return false;
+      console.debug(`[seedFromHistory] not passed DB`);
+      try {
+        injectedDb = await getAdapter();
+      } catch (e) {
+        console.debug(`[seedFromHistory] skip DB - error connection=${connectionId} err=${e.message}`);
+        return false;
+      }
+      if (!injectedDb){
+        console.debug(`[seedFromHistory] skip DB - await returned nothing`);          
+        return false;
+      } 
     }
 
     for (const key of keys) {
       const entry = store.get(key);
       if (entry && entry.samples && entry.samples.length > 0) {
-        console.debug(`[seedFromHistory] skip - already has samples connection=${connectionId} model=${model}`);
+        console.debug(`[seedFromHistory] skip - already has samples connection=${connectionId} model=${model} samples: ${entry.samples.length}`);
         continue;
       }
 
