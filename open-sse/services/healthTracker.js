@@ -372,7 +372,7 @@ export function resetHealthStats(connectionId = null) {
 
 async function seedFromHistory(connectionId, provider = null, model = null, injectedDb = null, config = null) {
   try {
-    if (!connectionId || !provider) return false;
+    if (!connectionId) return false;
     const cfg = resolveHealthConfig(config);
     const store = getStore();
 
@@ -417,24 +417,25 @@ async function seedFromHistory(connectionId, provider = null, model = null, inje
       }
 
       const sorted = okLatencies.sort((a, b) => a - b);
-      const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 5000;
-      const p95 = sorted.length > 0 ? sorted[Math.min(sorted.length - 1, Math.floor((95 / 100) * sorted.length))] : 5000;
+      const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 5000; // fallback 5s when no ok latencies
 
+      const weight = Math.max(1, Math.floor(cfg.minSamples * 0.7));
       const entryNew = getEntry(store, key);
       if (provider) entryNew.provider = provider;
       entryNew._prior = true;
       entryNew.lastFailureAt = latestFailureAt > 0 ? latestFailureAt : (entryNew.lastFailureAt || 0);
       entryNew.samples = [];
 
-      const count = Math.min(rows.length, cfg.windowSize);
-      for (let i = 0; i < count; i++) {
-        const sample = sorted.length > 0
-          ? { ok: true, latencyMs: sorted[i % sorted.length], at: Date.now() - (count - i) * 60000 }
-          : { ok: false, latencyMs: median, at: Date.now() - (count - i) * 60000 };
-        entryNew.samples.push(sample);
+      const okCount = Math.max(1, Math.round(weight * (1 - failures / rows.length)));
+      for (let i = 0; i < okCount; i++) {
+        entryNew.samples.push({ ok: true, latencyMs: sorted.length > 0 ? sorted[i % sorted.length] : median, at: Date.now() });
+      }
+      const failCount = weight - okCount;
+      for (let i = 0; i < failCount; i++) {
+        entryNew.samples.push({ ok: false, latencyMs: median, at: Date.now() });
       }
 
-      console.debug(`[seedFromHistory] connection=${connectionId} model=${model || "acct"} provider=${provider} samples=${entryNew.samples.length} ok=${entryNew.samples.filter(s=>s.ok).length} failures=${entryNew.samples.filter(s=>!s.ok).length} lastFailure=${new Date(entryNew.lastFailureAt||0).toISOString()} p95=${p95}ms`);
+      console.debug(`[seedFromHistory] connection=${connectionId} model=${model || "acct"} provider=${provider} samples=${entryNew.samples.length} ok=${entryNew.samples.filter(s=>s.ok).length} failures=${entryNew.samples.filter(s=>!s.ok).length} provider=${entryNew.provider||"?"} lastFailure=${new Date(entryNew.lastFailureAt||0).toISOString()}`);
       store.delete(key);
       store.set(key, entryNew);
     }
@@ -444,7 +445,7 @@ async function seedFromHistory(connectionId, provider = null, model = null, inje
   }
 }
 
-async function warmConnectionHistory(connections, model = null, injectedDb = null) {
+async function warmConnectionHistory(connections, model = null, injectedDb = null, config = null) {
   console.debug(`[warmConnectionHistory] seeding ${connections.length} connections`);
   const list = Array.isArray(connections) ? connections : [];
   const seen = new Set();
@@ -463,7 +464,7 @@ async function warmConnectionHistory(connections, model = null, injectedDb = nul
   for (const conn of list) {
     if (!conn || !conn.id || seen.has(conn.id)) continue;
     seen.add(conn.id);
-    await seedFromHistory(conn.id, conn.provider, model, injectedDb);
+    await seedFromHistory(conn.id, conn.provider, model, injectedDb, config);
   }
 }
 
