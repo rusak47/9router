@@ -22,12 +22,13 @@ export class OpenCodeExecutor extends BaseExecutor {
   }
 
   buildHeaders(credentials, stream = true) {
-    const key = credentials?.apiKey;
+    const key = credentials?.apiKey;    
     return {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${key || "public"}`,
       "x-opencode-client": "desktop",
       "Accept": "text/event-stream",
+      "User-Agent": "opencode/1.18.18 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14" //required to avoid filtering
     };
   }
 }
