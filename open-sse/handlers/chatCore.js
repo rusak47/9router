@@ -11,7 +11,7 @@ import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
-import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
+import { trackPendingRequest, appendRequestLog, saveRequestDetail, saveRequestUsage } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
@@ -362,6 +362,24 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       status: "error"
     })).catch(() => { });
 
+    // Record exception failure in usageHistory
+    saveRequestUsage({
+      timestamp: new Date().toISOString(),
+      provider: provider || "unknown",
+      model: model || "unknown",
+      connectionId: connectionId || undefined,
+      apiKey: apiKey || undefined,
+      endpoint: null,
+      promptTokens: 0,
+      completionTokens: 0,
+      cost: 0,
+      status: error.name === "AbortError" ? "499" : "502",
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      meta: {},
+      ttft: 0,
+      totalLatency: Date.now() - requestStartTime,
+    }).catch(() => { });
+
     if (error.name === "AbortError") {
       streamController.handleError(error);
       return createErrorResult(499, "Request aborted");
@@ -481,6 +499,24 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });
+
+    saveRequestUsage({
+      timestamp: new Date().toISOString(),
+      provider: provider || "unknown",
+      model: model || "unknown",
+      connectionId: connectionId || undefined,
+      apiKey: apiKey || undefined,
+      endpoint: null,
+      promptTokens: 0,
+      completionTokens: 0,
+      cost: 0,
+      status: String(statusCode),
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      meta: {},
+      ttft: 0,
+      totalLatency: Date.now() - requestStartTime,
+    }).catch(() => { });
+
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     if (log?.errorLine) {
       const urlStr = providerUrl ? `\n    URL: ${providerUrl}` : "";
