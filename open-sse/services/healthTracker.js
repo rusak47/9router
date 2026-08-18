@@ -425,26 +425,26 @@ async function seedFromHistory(connectionId, provider = null, model = null, inje
         else okLatencies.push(Number(r.totalLatency));
       }
 
-      const sorted = okLatencies.sort((a, b) => a - b);
-      const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 5000; // fallback 5s when no ok latencies
-
-      const weight = Math.max(1, Math.floor(cfg.minSamples * 0.7));
       const entryNew = getEntry(store, key);
       if (provider) entryNew.provider = provider;
       entryNew._prior = true;
       entryNew.lastFailureAt = latestFailureAt > 0 ? latestFailureAt : (entryNew.lastFailureAt || 0);
       entryNew.samples = [];
 
-      const okCount = Math.max(1, Math.round(weight * (1 - failures / rows.length)));
-      for (let i = 0; i < okCount; i++) {
-        entryNew.samples.push({ ok: true, latencyMs: sorted.length > 0 ? sorted[i % sorted.length] : median, at: Date.now() });
-      }
-      const failCount = weight - okCount;
-      for (let i = 0; i < failCount; i++) {
-        entryNew.samples.push({ ok: false, latencyMs: median, at: Date.now() });
+      const sampleCount = Math.min(rows.length, cfg.windowSize);
+      for (let i = 0; i < sampleCount; i++) {
+        const r = rows[i];
+        const statusNum = Number(r.status);
+        const isFailure = r.status === "error" || (statusNum >= 400 && statusNum < 600) || statusNum === 0;
+        const sample = {
+          ok: !isFailure,
+          latencyMs: Number(r.totalLatency) || 0,
+          at: Date.parse(r.timestamp) || Date.now(),
+        };
+        entryNew.samples.push(sample);
       }
 
-      console.debug(`[seedFromHistory] connection=${connectionId} model=${model || "acct"} provider=${provider} samples=${entryNew.samples.length} ok=${entryNew.samples.filter(s=>s.ok).length} failures=${entryNew.samples.filter(s=>!s.ok).length} provider=${entryNew.provider||"?"} lastFailure=${new Date(entryNew.lastFailureAt||0).toISOString()}`);
+      console.debug(`[seedFromHistory] connection=${connectionId} model=${model || "acct"} provider=${provider} samples=${entryNew.samples.length} ok=${entryNew.samples.filter(s=>s.ok).length} failures=${entryNew.samples.filter(s=>!s.ok).length} lastFailure=${new Date(entryNew.lastFailureAt||0).toISOString()}`);
       store.delete(key);
       store.set(key, entryNew);
     }

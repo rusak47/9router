@@ -83,7 +83,7 @@ describe("seedFromHistory", () => {
     expect(stats.samples).toBe(0);
   });
 
-  it("seeds synthetic failure-only samples when DB has no ok latencies (all failures)", async () => {
+  it("seeds real failure samples from DB (no synthetic mixing)", async () => {
     const rows = Array.from({ length: 15 }, () => ({ totalLatency: "1000", status: "500" }));
     const adapter = buildMockAdapter(rows);
     mocks.getAdapter.mockResolvedValue(adapter);
@@ -92,9 +92,9 @@ describe("seedFromHistory", () => {
     expect(result).toBe(true);
 
     const stats = getConnectionHealth("conn-bad");
-    expect(stats.samples).toBeGreaterThan(0); // synthetic seeded
-    expect(stats.failures).toBeGreaterThan(0); // failure-only
-    expect(stats.errorRate).toBe(0.5); // seeded 1 success + 1 failure
+    expect(stats.samples).toBeGreaterThan(0);
+    expect(stats.failures).toBe(stats.samples);
+    expect(stats.errorRate).toBe(1.0);
   });
 
   it("does not seed when live samples already exist", async () => {
@@ -111,7 +111,7 @@ describe("seedFromHistory", () => {
   });
 
   it("sets _prior=true so first live record flips it", async () => {
-    const rows = Array.from({ length: 15 }, (_, i) => ({ totalLatency: String(100 + i * 10), status: "200" }));
+    const rows = Array.from({ length: 15 }, (_, i) => ({ totalLatency: String(80 + i * 5), status: "200" })); // 80-152ms, avg ~116
     const adapter = buildMockAdapter(rows);
     mocks.getAdapter.mockResolvedValue(adapter);
 
@@ -120,9 +120,9 @@ describe("seedFromHistory", () => {
     const before = getConnectionHealth("conn-prior");
     expect(before.samples).toBeGreaterThan(0);
 
-    recordOutcome({ connectionId: "conn-prior", ok: true, latencyMs: 80 });
+    recordOutcome({ connectionId: "conn-prior", ok: true, latencyMs: 50 });
     const after = getConnectionHealth("conn-prior");
-    expect(after.avgLatencyMs).toBeLessThan(150);
+    expect(after.avgLatencyMs).toBeLessThan(120);
   });
 });
 
