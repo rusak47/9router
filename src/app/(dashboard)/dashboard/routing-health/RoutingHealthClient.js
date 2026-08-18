@@ -35,7 +35,7 @@ function formatAgo(ts) {
 }
 
 function healthTone(row) {
-  if (row.circuitOpen) return { label: "Circuit Open", cls: "bg-red-500/10 text-red-500" };
+  if (row.circuitOpen) return { label: "Circuit Open", cls: "bg-red-500/10 text-red-500", cooldownMs: row.cooldownRemainingMs };
   if (row.errorRate >= 0.2) return { label: "Degraded", cls: "bg-amber-500/10 text-amber-500" };
   return { label: "Healthy", cls: "bg-emerald-500/10 text-emerald-500" };
 }
@@ -294,6 +294,11 @@ function StatsTable({ title, rows, maxLatency, showModel = false }) {
                     <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${tone.cls}`}>
                       {tone.label}
                     </span>
+                    {tone.cooldownMs && (
+                      <span className="ml-2 text-[11px] font-mono text-red-400">
+                        {formatCooldown(tone.cooldownMs)}
+                      </span>
+                    )}
                   </td>
                   <td className="py-2.5 pr-3 w-[130px]">
                     <div className="font-mono text-xs mb-1">{formatMs(row.avgLatencyMs)}</div>

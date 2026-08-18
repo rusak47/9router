@@ -303,7 +303,17 @@ export function selectHealthiestConnection(candidates, { model = null, config = 
   if (pool.length === 0) {
     // Everything is unhealthy — degrade gracefully instead of erroring out.
     pool = scored;
-    reason = "all-circuits-open";
+    // Show shortest cooldown remaining so UI can display "retry in Xs"
+    const minCooldown = Math.min(...scored.map(s => {
+      const h = s.health;
+      const remaining = cfg.circuitCooldownMs - (Date.now() - (h.lastFailureAt || 0));
+      return h.circuitOpen && remaining > 0 ? remaining : Infinity;
+    }));
+    if (minCooldown !== Infinity && minCooldown > 0) {
+      reason = `all-circuits-open (retry in ${Math.ceil(minCooldown / 1000)}s)`;
+    } else {
+      reason = "all-circuits-open";
+    }
   }
 
   const positiveLatencies = pool.map((s) => s.health.avgLatencyMs).filter((v) => v > 0);
@@ -336,13 +346,20 @@ export function getAllHealthStats(config = null) {
     const { connectionId, model } = parseHealthKey(key);
     const stats = summarize(entry, cfg);
     if (stats.samples === 0 && !stats.circuitOpen && (!stats.lastFailureAt || Date.now() - stats.lastFailureAt > cfg.sampleTtlMs)) continue;
+    const circuitOpen = isCircuitOpen(stats, cfg);
+    let cooldownRemainingMs = 0;
+    if (circuitOpen && stats.lastFailureAt) {
+      cooldownRemainingMs = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt);
+      if (cooldownRemainingMs < 0) cooldownRemainingMs = 0;
+    }
     rows.push({
       connectionId,
       model,
       provider: entry.provider || null,
       connectionName: entry.connectionName || null,
       ...stats,
-      circuitOpen: isCircuitOpen(stats, cfg),
+      circuitOpen,
+      cooldownRemainingMs,
     });
   }
   // Account-wide rows first, then per-model, worst health on top.
