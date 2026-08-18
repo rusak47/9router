@@ -215,27 +215,29 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
   }
   if (!stats) stats = summarize(store.get(buildHealthKey(connectionId)), cfg);
 
-  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg) };
+  const entry = store.get(buildHealthKey(connectionId, model)) || store.get(buildHealthKey(connectionId));
+  const healthLabel = entry?.provider ? `provider=${entry.provider} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}` : null;
+  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel) };
 }
 
 /**
  * A circuit is open when a connection failed often enough recently.
  * It re-closes automatically once the cooldown passes since the last failure.
  */
-export function isCircuitOpen(stats, config = null) {
+export function isCircuitOpen(stats, config = null, label = null) {
   const cfg = resolveHealthConfig(config);
   if (!stats || stats.samples < cfg.circuitMinSamples) {
-    console.log("[HEALTH]", `isCircuitOpen samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed ${JSON.stringify(stats)}`);
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
     return false;
   }
   if (stats.errorRate < cfg.circuitErrorRate) {
-    console.log("[HEALTH]", `isCircuitOpen errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
     return false;
   }
   if (!stats.lastFailureAt) return false;
   const remaining = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt); //TODO why backoff is missing here? 
   const open = remaining > 0;
-  console.log("[HEALTH]", `isCircuitOpen errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} cooldownRemain=${Math.round(remaining/1000)}s → ${open ? "OPEN" : "closed (expired)"}`);
+  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} cooldownRemain=${Math.round(remaining/1000)}s → ${open ? "OPEN" : "closed (expired)"}`);
   return open;
 }
 
@@ -346,7 +348,7 @@ export function getAllHealthStats(config = null) {
     const { connectionId, model } = parseHealthKey(key);
     const stats = summarize(entry, cfg);
     if (stats.samples === 0 && !stats.circuitOpen && (!stats.lastFailureAt || Date.now() - stats.lastFailureAt > cfg.sampleTtlMs)) continue;
-    const circuitOpen = isCircuitOpen(stats, cfg);
+    const circuitOpen = isCircuitOpen(stats, cfg, `provider=${entry?.provider || "?"} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}`);
     let cooldownRemainingMs = 0;
     if (circuitOpen && stats.lastFailureAt) {
       cooldownRemainingMs = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt);

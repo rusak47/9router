@@ -34,6 +34,12 @@ function formatAgo(ts) {
   return `${Math.floor(diff / 3600000)}h ago`;
 }
 
+function formatCooldown(ms) {
+  if (!ms || ms <= 0) return null;
+  if (ms < 60000) return `${Math.ceil(ms / 1000)}s`;
+  return `${Math.ceil(ms / 60000)}m`;
+}
+
 function healthTone(row) {
   if (row.circuitOpen) return { label: "Circuit Open", cls: "bg-red-500/10 text-red-500", cooldownMs: row.cooldownRemainingMs };
   if (row.errorRate >= 0.2) return { label: "Degraded", cls: "bg-amber-500/10 text-amber-500" };
