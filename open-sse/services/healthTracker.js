@@ -16,7 +16,7 @@ import {
 } from "../config/healthConfig.js";
 import { getAdapter } from "@/lib/db/driver";
 
-const KEY_SEP = "";
+const KEY_SEP = "\0";
 
 // Single store per process. `globalThis` survives Next.js dev module reloads so
 // the dashboard API route reads the same data the router writes.
