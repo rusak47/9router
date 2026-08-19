@@ -41,9 +41,11 @@ function parseHealthKey(key) {
 function getEntry(store, key) {
   let entry = store.get(key);
   if (!entry) {
-    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null };
+    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null, consecutiveTrips: 0 };
     store.set(key, entry);
   }
+  // Ensure consecutiveTrips exists for backward compat
+  if (entry.consecutiveTrips === undefined) entry.consecutiveTrips = 0;
   return entry;
 }
 
@@ -135,8 +137,21 @@ export function recordOutcome({
       console.log("[HEALTH]", `recordOutcome conn=${connectionId} ok=${ok} status=${status} model=${model ?? "acct"} samples=${s0.samples} failures=${s0.failures} errorRate=${s0.errorRate.toFixed(3)} lastFail=${s0.lastFailureAt ? Math.round((Date.now() - s0.lastFailureAt) / 1000) + "s" : "none"}`);
       // Log circuit state change after recording
       if (s0.lastFailureAt > 0) {
-        const remaining = cfg.circuitCooldownMs - (Date.now() - s0.lastFailureAt);
-        console.log("[HEALTH]", `recordOutcome conn=${connectionId} circuitCooldownRemaining=${Math.round(remaining/1000)}s ok=${s0.samples >= cfg.circuitMinSamples && s0.errorRate >= cfg.circuitErrorRate ? "TRIPPED" : "OK"}`);
+        const entry0 = store.get(buildHealthKey(connectionId));
+        const wasTripped = entry0?.consecutiveTrips > 0;
+        const nowTripped = s0.samples >= cfg.circuitMinSamples && s0.errorRate >= cfg.circuitErrorRate;
+        if (nowTripped && !wasTripped) {
+          // Circuit just tripped - increment consecutiveTrips on both account and model entries
+          for (const key of keys) {
+            const e = store.get(key);
+            if (e) e.consecutiveTrips = (e.consecutiveTrips || 0) + 1;
+          }
+        }
+        const trips = entry0?.consecutiveTrips || 0;
+        const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, trips - 1));
+        const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
+        const remaining = effectiveCooldownMs - (Date.now() - s0.lastFailureAt);
+        console.log("[HEALTH]", `recordOutcome conn=${connectionId} circuitCooldownRemaining=${Math.round(remaining/1000)}s trips=${trips} ok=${nowTripped ? "TRIPPED" : "OK"}`);
       }
     }
 
@@ -217,27 +232,48 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
 
   const entry = store.get(buildHealthKey(connectionId, model)) || store.get(buildHealthKey(connectionId));
   const healthLabel = entry?.provider ? `provider=${entry.provider} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}` : null;
-  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel) };
+  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel, entry) };
 }
 
 /**
  * A circuit is open when a connection failed often enough recently.
  * It re-closes automatically once the cooldown passes since the last failure.
  */
-export function isCircuitOpen(stats, config = null, label = null) {
+export function isCircuitOpen(stats, config = null, label = null, entry = null) {
   const cfg = resolveHealthConfig(config);
   if (!stats || stats.samples < cfg.circuitMinSamples) {
     console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
     return false;
   }
   if (stats.errorRate < cfg.circuitErrorRate) {
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
+    // Error rate below threshold - circuit closed, reset trips (actual recovery)
+    if (entry && entry.consecutiveTrips > 0) {
+      entry.consecutiveTrips = 0;
+    }
     return false;
   }
   if (!stats.lastFailureAt) return false;
-  const remaining = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt); //TODO why backoff is missing here? 
+
+  // Circuit condition met - compute effective cooldown with exponential backoff
+  const trips = entry?.consecutiveTrips || 0;
+  const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, trips - 1));
+  const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
+  const remaining = effectiveCooldownMs - (Date.now() - stats.lastFailureAt);
   const open = remaining > 0;
-  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} cooldownRemain=${Math.round(remaining/1000)}s → ${open ? "OPEN" : "closed (expired)"}`);
+
+  if (open) {
+    // Circuit is open - ensure we have at least 1 trip recorded
+    if (entry && entry.consecutiveTrips === 0) {
+      entry.consecutiveTrips = 1;
+    }
+  } else {
+    // Cooldown expired - circuit closes, reset trips
+    if (entry && entry.consecutiveTrips > 0) {
+      entry.consecutiveTrips = 0;
+    }
+  }
+
+  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${trips} effectiveCooldown=${Math.round(effectiveCooldownMs/1000)}s cooldownRemain=${Math.round(Math.max(0, remaining)/1000)}s → ${open ? "OPEN" : "closed (expired)"}`);
   return open;
 }
 
@@ -348,7 +384,7 @@ export function getAllHealthStats(config = null) {
     const { connectionId, model } = parseHealthKey(key);
     const stats = summarize(entry, cfg);
     if (stats.samples === 0 && !stats.circuitOpen && (!stats.lastFailureAt || Date.now() - stats.lastFailureAt > cfg.sampleTtlMs)) continue;
-    const circuitOpen = isCircuitOpen(stats, cfg, `provider=${entry?.provider || "?"} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}`);
+    const circuitOpen = isCircuitOpen(stats, cfg, `provider=${entry?.provider || "?"} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}`, entry);
     let cooldownRemainingMs = 0;
     if (circuitOpen && stats.lastFailureAt) {
       cooldownRemainingMs = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt);
