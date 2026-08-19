@@ -41,7 +41,7 @@ function parseHealthKey(key) {
 function getEntry(store, key) {
   let entry = store.get(key);
   if (!entry) {
-    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null, consecutiveTrips: 0 };
+    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null, consecutiveTrips: 0, circuitCooldownUntil: 0 };
     store.set(key, entry);
   }
   // Ensure consecutiveTrips exists for backward compat
@@ -232,7 +232,7 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
 
   const entry = store.get(buildHealthKey(connectionId, model)) || store.get(buildHealthKey(connectionId));
   const healthLabel = entry?.provider ? `provider=${entry.provider} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}` : null;
-  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel, entry) };
+  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel, entry), circuitCooldownUntil: entry?.circuitCooldownUntil || 0 };
 }
 
 /**
@@ -241,40 +241,44 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
  */
 export function isCircuitOpen(stats, config = null, label = null, entry = null) {
   const cfg = resolveHealthConfig(config);
+
+  // 1) If currently in active cooldown, stay OPEN regardless of samples/pruning.
+  //    circuitCooldownUntil is a standalone timestamp that TTL pruning cannot erase.
+  if (entry?.circuitCooldownUntil && Date.now() < entry.circuitCooldownUntil) {
+    const remaining = entry.circuitCooldownUntil - Date.now();
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} trips=${entry.consecutiveTrips || 0} in-cooldown cooldownRemain=${Math.round(remaining/1000)}s → OPEN`);
+    return true;
+  }
+
+  // 2) Cooldown expired (or never set) — evaluate error rate from samples
   if (!stats || stats.samples < cfg.circuitMinSamples) {
     console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
     return false;
   }
   if (stats.errorRate < cfg.circuitErrorRate) {
-    // Error rate below threshold - circuit closed, reset trips (actual recovery)
-    if (entry && entry.consecutiveTrips > 0) {
+    // Actual recovery — error rate improved, reset trips
+    if (entry) {
       entry.consecutiveTrips = 0;
+      entry.circuitCooldownUntil = 0;
     }
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
     return false;
   }
   if (!stats.lastFailureAt) return false;
 
-  // Circuit condition met - compute effective cooldown with exponential backoff
-  const trips = entry?.consecutiveTrips || 0;
-  const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, trips - 1));
+  // 3) Still failing after cooldown expired — escalate backoff
+  const prevTrips = entry?.consecutiveTrips || 0;
+  const newTrips = prevTrips + 1;
+  const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, prevTrips));
   const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
-  const remaining = effectiveCooldownMs - (Date.now() - stats.lastFailureAt);
-  const open = remaining > 0;
 
-  if (open) {
-    // Circuit is open - ensure we have at least 1 trip recorded
-    if (entry && entry.consecutiveTrips === 0) {
-      entry.consecutiveTrips = 1;
-    }
-  } else {
-    // Cooldown expired - circuit closes, reset trips
-    if (entry && entry.consecutiveTrips > 0) {
-      entry.consecutiveTrips = 0;
-    }
+  if (entry) {
+    entry.consecutiveTrips = newTrips;
+    entry.circuitCooldownUntil = Date.now() + effectiveCooldownMs;
   }
 
-  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${trips} effectiveCooldown=${Math.round(effectiveCooldownMs/1000)}s cooldownRemain=${Math.round(Math.max(0, remaining)/1000)}s → ${open ? "OPEN" : "closed (expired)"}`);
-  return open;
+  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${newTrips} effectiveCooldown=${Math.round(effectiveCooldownMs/1000)}s → OPEN`);
+  return true;
 }
 
 /**
@@ -344,7 +348,7 @@ export function selectHealthiestConnection(candidates, { model = null, config = 
     // Show shortest cooldown remaining so UI can display "retry in Xs"
     const minCooldown = Math.min(...scored.map(s => {
       const h = s.health;
-      const remaining = cfg.circuitCooldownMs - (Date.now() - (h.lastFailureAt || 0));
+      const remaining = (h.circuitCooldownUntil || 0) - Date.now();
       return h.circuitOpen && remaining > 0 ? remaining : Infinity;
     }));
     if (minCooldown !== Infinity && minCooldown > 0) {
@@ -386,14 +390,14 @@ export function getAllHealthStats(config = null) {
     if (stats.samples === 0 && !stats.circuitOpen && (!stats.lastFailureAt || Date.now() - stats.lastFailureAt > cfg.sampleTtlMs)) continue;
     const circuitOpen = isCircuitOpen(stats, cfg, `provider=${entry?.provider || "?"} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}`, entry);
     let cooldownRemainingMs = 0;
-    if (circuitOpen && stats.lastFailureAt) {
-      cooldownRemainingMs = cfg.circuitCooldownMs - (Date.now() - stats.lastFailureAt);
-      if (cooldownRemainingMs < 0) cooldownRemainingMs = 0;
+    if (entry?.circuitCooldownUntil) {
+      cooldownRemainingMs = Math.max(0, (entry.circuitCooldownUntil || 0) - Date.now());
     }
     rows.push({
       connectionId,
       model,
       provider: entry.provider || null,
+      circuitCooldownUntil: entry.circuitCooldownUntil || 0,
       connectionName: entry.connectionName || null,
       ...stats,
       circuitOpen,
