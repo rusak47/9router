@@ -92,6 +92,31 @@ In the dashboard, open `Endpoint` → `Token Saver` → `Headroom`, confirm the 
 
 If Headroom runs on the Docker host instead of as a sidecar, use `http://host.docker.internal:8787` on macOS/Windows. On Linux, add `--add-host=host.docker.internal:host-gateway` or the equivalent compose `extra_hosts` entry.
 
+### Configure 429 account backoff
+
+When an upstream rate limit is detected, 9Router temporarily locks the affected
+account/model using exponential backoff. The default is unchanged: `2s`, `4s`,
+`8s` and so on, capped at `5 minutes` for up to `15` levels. Operators can tune
+that schedule for providers with different quota-reset windows:
+
+```bash
+docker run -d \
+  -p 20128:20128 \
+  -v "$HOME/.9router:/app/data" \
+  -e DATA_DIR=/app/data \
+  -e BACKOFF_BASE_MS=2000 \
+  -e BACKOFF_MAX_MS=300000 \
+  -e BACKOFF_MAX_LEVEL=15 \
+  --name 9router \
+  decolua/9router:latest
+```
+
+Each value is optional and must be a positive integer. Malformed values use
+that knob's default; a cap below the base is rejected as a contradictory
+schedule and uses the unchanged defaults. These settings govern account/model
+locks after rate-limit fallback, not provider-specific retry mechanisms or
+provider `Retry-After` hints.
+
 ## Update to latest
 
 ```bash
