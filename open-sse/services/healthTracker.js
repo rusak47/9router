@@ -41,11 +41,13 @@ function parseHealthKey(key) {
 function getEntry(store, key) {
   let entry = store.get(key);
   if (!entry) {
-    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null, consecutiveTrips: 0, circuitCooldownUntil: 0 };
+    entry = { samples: [], lastFailureAt: 0, provider: null, connectionName: null, consecutiveTrips: 0, circuitCooldownUntil: 0, circuitHalfOpen: false, probeSucceeded: false };
     store.set(key, entry);
   }
-  // Ensure consecutiveTrips exists for backward compat
   if (entry.consecutiveTrips === undefined) entry.consecutiveTrips = 0;
+  if (entry.circuitCooldownUntil === undefined) entry.circuitCooldownUntil = 0;
+  if (entry.circuitHalfOpen === undefined) entry.circuitHalfOpen = false;
+  if (entry.probeSucceeded === undefined) entry.probeSucceeded = false;
   return entry;
 }
 
@@ -138,20 +140,51 @@ export function recordOutcome({
       // Log circuit state change after recording
       if (s0.lastFailureAt > 0) {
         const entry0 = store.get(buildHealthKey(connectionId));
-        const wasTripped = entry0?.consecutiveTrips > 0;
+        const wasHalfOpen = entry0?.circuitHalfOpen;
         const nowTripped = s0.samples >= cfg.circuitMinSamples && s0.errorRate >= cfg.circuitErrorRate;
-        if (nowTripped && !wasTripped) {
-          // Circuit just tripped - increment consecutiveTrips on both account and model entries
+
+        if (wasHalfOpen && !ok) {
+          // Probe failed while half-open — re-trip with escalated backoff
+          const prevTrips = entry0?.consecutiveTrips || 0;
+          const newTrips = prevTrips + 1;
+          const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, prevTrips));
+          const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
           for (const key of keys) {
             const e = store.get(key);
-            if (e) e.consecutiveTrips = (e.consecutiveTrips || 0) + 1;
+            if (e) {
+              e.consecutiveTrips = newTrips;
+              e.circuitCooldownUntil = Date.now() + effectiveCooldownMs;
+              e.circuitHalfOpen = false;
+            }
+          }
+        } else if (wasHalfOpen && ok) {
+          // Probe succeeded — flag for isCircuitOpen AND clear old failures
+          // so error rate drops below threshold immediately
+          for (const key of keys) {
+            const e = store.get(key);
+            if (e) {
+              e.probeSucceeded = true;
+              e.circuitHalfOpen = false;
+              e.consecutiveTrips = 0;
+              e.circuitCooldownUntil = 0;
+              // Clear old failure samples — the probe proves connection works
+              e.samples = e.samples.filter(s => s.ok);
+            }
+          }
+        } else if (nowTripped && !(entry0?.circuitCooldownUntil > Date.now())) {
+          // First trip — set initial cooldown (circuit not already in cooldown)
+          for (const key of keys) {
+            const e = store.get(key);
+            if (e) {
+              e.consecutiveTrips = (e.consecutiveTrips || 0) + 1;
+              e.circuitCooldownUntil = Date.now() + cfg.circuitCooldownMs;
+            }
           }
         }
+
         const trips = entry0?.consecutiveTrips || 0;
-        const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, trips - 1));
-        const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
-        const remaining = effectiveCooldownMs - (Date.now() - s0.lastFailureAt);
-        console.log("[HEALTH]", `recordOutcome conn=${connectionId} circuitCooldownRemaining=${Math.round(remaining/1000)}s trips=${trips} ok=${nowTripped ? "TRIPPED" : "OK"}`);
+        const cooldownRemain = (entry0?.circuitCooldownUntil || 0) - Date.now();
+        console.log("[HEALTH]", `recordOutcome conn=${connectionId} trips=${trips} cooldownRemain=${Math.round(Math.max(0, cooldownRemain)/1000)}s halfOpen=${entry0?.circuitHalfOpen || false} ok=${ok ? "OK" : "FAIL"}`);
       }
     }
 
@@ -232,7 +265,7 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
 
   const entry = store.get(buildHealthKey(connectionId, model)) || store.get(buildHealthKey(connectionId));
   const healthLabel = entry?.provider ? `provider=${entry.provider} model=${model || "acct"} conn=${connectionId?.slice(0, 8)}` : null;
-  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel, entry), circuitCooldownUntil: entry?.circuitCooldownUntil || 0 };
+  return { ...stats, scoped, circuitOpen: isCircuitOpen(stats, cfg, healthLabel, entry), circuitCooldownUntil: entry?.circuitCooldownUntil || 0, circuitHalfOpen: entry?.circuitHalfOpen || false, consecutiveTrips: entry?.consecutiveTrips || 0 };
 }
 
 /**
@@ -242,15 +275,32 @@ export function getConnectionHealth(connectionId, model = null, config = null) {
 export function isCircuitOpen(stats, config = null, label = null, entry = null) {
   const cfg = resolveHealthConfig(config);
 
-  // 1) If currently in active cooldown, stay OPEN regardless of samples/pruning.
-  //    circuitCooldownUntil is a standalone timestamp that TTL pruning cannot erase.
+  // 1) Active cooldown — stay OPEN. circuitCooldownUntil is a standalone
+  //    timestamp that TTL pruning cannot erase.
   if (entry?.circuitCooldownUntil && Date.now() < entry.circuitCooldownUntil) {
     const remaining = entry.circuitCooldownUntil - Date.now();
     console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} trips=${entry.consecutiveTrips || 0} in-cooldown cooldownRemain=${Math.round(remaining/1000)}s → OPEN`);
     return true;
   }
 
-  // 2) Cooldown expired (or never set) — evaluate error rate from samples
+  // 2) In HALF_OPEN — allow exactly one probe request. Do not escalate
+  //    based on stale samples from before the cooldown.
+  if (entry?.circuitHalfOpen) {
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} half-open (probe allowed)`);
+    return false;
+  }
+
+  // 2.5) Successful probe just arrived — treat as full recovery
+  if (entry?.probeSucceeded) {
+    entry.consecutiveTrips = 0;
+    entry.circuitCooldownUntil = 0;
+    entry.circuitHalfOpen = false;
+    entry.probeSucceeded = false;
+    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} probe-success → closed`);
+    return false;
+  }
+
+  // 3) Cooldown expired (or never set) — evaluate error rate from samples
   if (!stats || stats.samples < cfg.circuitMinSamples) {
     console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
     return false;
@@ -264,21 +314,18 @@ export function isCircuitOpen(stats, config = null, label = null, entry = null) 
     console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
     return false;
   }
-  if (!stats.lastFailureAt) return false;
-
-  // 3) Still failing after cooldown expired — escalate backoff
-  const prevTrips = entry?.consecutiveTrips || 0;
-  const newTrips = prevTrips + 1;
-  const backoffMultiplier = Math.pow(cfg.circuitBackoffFactor, Math.max(0, prevTrips));
-  const effectiveCooldownMs = cfg.circuitCooldownMs * backoffMultiplier;
-
-  if (entry) {
-    entry.consecutiveTrips = newTrips;
-    entry.circuitCooldownUntil = Date.now() + effectiveCooldownMs;
+  if (!stats.lastFailureAt) {
+    return false;
   }
 
-  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${newTrips} effectiveCooldown=${Math.round(effectiveCooldownMs/1000)}s → OPEN`);
-  return true;
+  // 4) Cooldown expired but error rate still high — enter HALF_OPEN.
+  //    Return false so one probe request can test the connection.
+  //    Escalation happens in recordOutcome when the probe result arrives.
+  if (entry) {
+    entry.circuitHalfOpen = true;
+  }
+  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${entry?.consecutiveTrips || 0} cooldown-expired → half-open (probe allowed)`);
+  return false;
 }
 
 /**
@@ -398,6 +445,7 @@ export function getAllHealthStats(config = null) {
       model,
       provider: entry.provider || null,
       circuitCooldownUntil: entry.circuitCooldownUntil || 0,
+      circuitHalfOpen: entry.circuitHalfOpen || false,
       connectionName: entry.connectionName || null,
       ...stats,
       circuitOpen,
