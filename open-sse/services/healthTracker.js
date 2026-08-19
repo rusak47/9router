@@ -132,14 +132,17 @@ export function recordOutcome({
       store.delete(key);
       store.set(key, entry);
     }
-    // Log outcome once per call (on account-wide key only) to avoid noise
-    if (!model) {
-      const entry0 = getEntry(store, buildHealthKey(connectionId));
+    // Evaluate circuit breaker on connection-level entry (always, not just when model is null)
+    const connKey = buildHealthKey(connectionId);
+    const entry0 = store.get(connKey);
+    if (entry0) {
       const s0 = summarize(entry0, cfg);
-      console.log("[HEALTH]", `recordOutcome conn=${connectionId} ok=${ok} status=${status} model=${model ?? "acct"} samples=${s0.samples} failures=${s0.failures} errorRate=${s0.errorRate.toFixed(3)} lastFail=${s0.lastFailureAt ? Math.round((Date.now() - s0.lastFailureAt) / 1000) + "s" : "none"}`);
+      // Log outcome once per call (on account-wide key only) to avoid noise
+      if (!model) {
+        console.log("[HEALTH]", `recordOutcome conn=${connectionId} ok=${ok} status=${status} model=${model ?? "acct"} samples=${s0.samples} failures=${s0.failures} errorRate=${s0.errorRate.toFixed(3)} lastFail=${s0.lastFailureAt ? Math.round((Date.now() - s0.lastFailureAt) / 1000) + "s" : "none"}`);
+      }
       // Log circuit state change after recording
       if (s0.lastFailureAt > 0) {
-        const entry0 = store.get(buildHealthKey(connectionId));
         const wasHalfOpen = entry0?.circuitHalfOpen;
         const nowTripped = s0.samples >= cfg.circuitMinSamples && s0.errorRate >= cfg.circuitErrorRate;
 
