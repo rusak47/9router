@@ -251,6 +251,45 @@ function summarize(entry, cfg) {
  * @returns {{samples:number, errorRate:number, avgLatencyMs:number, p95LatencyMs:number,
  *            scoped:boolean, circuitOpen:boolean, lastFailureAt:number}}
  */
+export function isProviderModelBlocked(provider, model, config = null) {
+  const cfg = resolveHealthConfig(config);
+  const store = getStore();
+  const now = Date.now();
+  
+  // Scan store for account-wide entries (model=null) matching provider
+  let sawAny = false;
+  let allOpen = true;
+  let minRemain = Infinity;
+  
+  for (const [key, entry] of store.entries()) {
+    const { model: keyModel } = parseHealthKey(key);
+    if ((entry.provider || null) !== (provider || null)) continue;
+    // Only check account-wide entry (model === null) to avoid double-counting per-model entries
+    if (keyModel !== null) continue;
+    sawAny = true;
+    
+    const stats = summarize(entry, cfg);
+    const circuitOpen = isCircuitOpen(stats, cfg, null, entry);
+    
+    if (!circuitOpen) {
+      allOpen = false;
+      break;
+    } else {
+      const remain = (entry.circuitCooldownUntil || 0) - now;
+      if (remain > 0 && remain < minRemain) minRemain = remain;
+    }
+  }
+  
+  if (!sawAny) return { blocked: false, reason: "no-health-data" };
+  if (!allOpen) return { blocked: false, reason: "healthy-path-exists" };
+  
+  return { 
+    blocked: true, 
+    reason: "all-circuits-open",
+    cooldownRemainingMs: minRemain !== Infinity ? minRemain : 0
+  };
+}
+
 export function getConnectionHealth(connectionId, model = null, config = null) {
   const cfg = resolveHealthConfig(config);
   const store = getStore();
@@ -282,14 +321,14 @@ export function isCircuitOpen(stats, config = null, label = null, entry = null) 
   //    timestamp that TTL pruning cannot erase.
   if (entry?.circuitCooldownUntil && Date.now() < entry.circuitCooldownUntil) {
     const remaining = entry.circuitCooldownUntil - Date.now();
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} trips=${entry.consecutiveTrips || 0} in-cooldown cooldownRemain=${Math.round(remaining/1000)}s → OPEN`);
+    if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} trips=${entry.consecutiveTrips || 0} in-cooldown cooldownRemain=${Math.round(remaining/1000)}s → OPEN`);
     return true;
   }
 
   // 2) In HALF_OPEN — allow exactly one probe request. Do not escalate
   //    based on stale samples from before the cooldown.
   if (entry?.circuitHalfOpen) {
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} half-open (probe allowed)`);
+    if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} half-open (probe allowed)`);
     return false;
   }
 
@@ -299,13 +338,13 @@ export function isCircuitOpen(stats, config = null, label = null, entry = null) 
     entry.circuitCooldownUntil = 0;
     entry.circuitHalfOpen = false;
     entry.probeSucceeded = false;
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} probe-success → closed`);
+    if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} probe-success → closed`);
     return false;
   }
 
   // 3) Cooldown expired (or never set) — evaluate error rate from samples
   if (!stats || stats.samples < cfg.circuitMinSamples) {
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
+    if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} samples=${stats?.samples ?? 0} < min=${cfg.circuitMinSamples} → closed`);
     return false;
   }
   if (stats.errorRate < cfg.circuitErrorRate) {
@@ -314,7 +353,7 @@ export function isCircuitOpen(stats, config = null, label = null, entry = null) 
       entry.consecutiveTrips = 0;
       entry.circuitCooldownUntil = 0;
     }
-    console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
+    if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} < threshold=${cfg.circuitErrorRate} → closed`);
     return false;
   }
   if (!stats.lastFailureAt) {
@@ -327,7 +366,7 @@ export function isCircuitOpen(stats, config = null, label = null, entry = null) 
   if (entry) {
     entry.circuitHalfOpen = true;
   }
-  console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${entry?.consecutiveTrips || 0} cooldown-expired → half-open (probe allowed)`);
+  if(!label?.includes("acct")) console.log("[HEALTH]", `isCircuitOpen${label ? " " + label : ""} errorRate=${stats.errorRate.toFixed(3)} samples=${stats.samples} trips=${entry?.consecutiveTrips || 0} cooldown-expired → half-open (probe allowed)`);
   return false;
 }
 
