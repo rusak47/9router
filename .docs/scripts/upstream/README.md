@@ -65,11 +65,11 @@ ignored: it is reference material, not executable toolkit code.
 <command>node .docs/scripts/upstream/cli.js cleanup --plan .docs/fork-sync-state/my-branch-cleanup.json --apply</command>
 </example>
 
-`--generate` preserves every commit initially and marks each one `review
-required`. Edit the local plan before applying it: move a wrongly suggested
-drop entry into `replay`, add a reason, or group commits under `subject` to
-squash them. The toolkit never treats a commit as disposable solely because
-its subject contains `debug`, `test`, or `fix`.
+`--generate` preserves every commit initially, includes each commit subject,
+and leaves `reason` as `null`. Edit the local plan before applying it: move a
+wrongly suggested drop entry into `replay`, add a reason, or group commits
+under `subject` to squash them. The toolkit never treats a commit as
+disposable solely because its subject contains `debug`, `test`, or `fix`.
 
 To change a classification without editing JSON manually, preview the
 modification first and add `--apply` to write it:

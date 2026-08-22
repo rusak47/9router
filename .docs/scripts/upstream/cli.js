@@ -194,7 +194,8 @@ async function cleanup() {
       drop: [],
       replay: range(base, current).map(commit => ({
         commits: [commit],
-        reason: "review required; preserve until explicitly classified",
+        subject: git(["show", "-s", "--format=%s", commit]),
+        reason: null,
       })),
     };
     await mkdir(dirname(a.generate), { recursive: true });
