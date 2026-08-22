@@ -171,11 +171,15 @@ async function cleanup() {
     drop: dropped.map(item => ({
       sha: ref(item.commit, "cleanup commit"),
       subject: item.subject || git(["show", "-s", "--format=%s", item.commit]),
+      reason: item.reason || "explicitly marked for removal",
     })),
     replay: replay.map(group => ({
       commits: group.commits.map(commitSummary),
       subject: group.subject || null,
       squash: group.commits.length > 1,
+      reason: group.reason || (group.commits.length > 1
+        ? "squash iterative commits into one logical change"
+        : "preserve unique local change"),
     })),
   };
   output(report);
