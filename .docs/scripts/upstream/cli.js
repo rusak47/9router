@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs, git, gitLines, ref, range, ancestor, mergeBase, patchIds, loadLedger, saveLedger, requireClean, assertPushRemote, commitSummary, config } from "./lib.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 const a = parseArgs(process.argv.slice(2)), command = a._[0] || "analyze";
 const target = a._[1] || `${config.upstreamRemote}/${config.baseBranch}`;
@@ -148,7 +149,25 @@ async function resetCandidates() {
   }));
 }
 async function cleanup() {
-  if (!a.plan) throw new Error("cleanup requires --plan <file>");
+  if (a.generate) {
+    const base = ref(a.base || `origin/${config.baseBranch}`, "cleanup base");
+    const current = ref(a.branch || "HEAD", "cleanup branch");
+    const generated = {
+      schemaVersion: 1,
+      branch: git(["branch", "--show-current"]) || a.branch || "HEAD",
+      base,
+      drop: [],
+      replay: range(base, current).map(commit => ({
+        commits: [commit],
+        reason: "review required; preserve until explicitly classified",
+      })),
+    };
+    await mkdir(dirname(a.generate), { recursive: true });
+    await writeFile(a.generate, `${JSON.stringify(generated, null, 2)}\n`);
+    output({ generated: a.generate, ...generated });
+    return;
+  }
+  if (!a.plan) throw new Error("cleanup requires --plan <file> (or --generate <file>)");
   const plan = JSON.parse(await readFile(a.plan, "utf8"));
   const base = ref(plan.base || a.base || `origin/${config.baseBranch}`, "cleanup base");
   const current = ref(a.branch || "HEAD", "cleanup branch");
