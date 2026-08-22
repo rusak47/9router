@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { isProviderModelBlocked } from "./healthTracker.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -265,6 +266,20 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
 
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
+    
+    // Circuit breaker: skip models with open circuits to prevent hammering unhealthy connections
+    const slashIdx = modelStr.indexOf("/");
+    const provider = slashIdx > 0 ? modelStr.slice(0, slashIdx) : null;
+    const model = slashIdx > 0 ? modelStr.slice(slashIdx + 1) : modelStr;
+    if (provider) {
+      const health = isProviderModelBlocked(provider, model);
+      if (health.blocked) {
+        const remainSec = Math.ceil(health.cooldownRemainingMs / 1000);
+        log.info("COMBO", `Skipping ${modelStr} - circuit open (${remainSec}s remaining)`);
+        continue;
+      }
+    }
+    
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
