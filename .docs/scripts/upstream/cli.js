@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs, git, gitLines, ref, range, ancestor, mergeBase, patchIds, loadLedger, saveLedger, requireClean, assertPushRemote, commitSummary, config } from "./lib.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const a = parseArgs(process.argv.slice(2)), command = a._[0] || "analyze";
 const target = a._[1] || `${config.upstreamRemote}/${config.baseBranch}`;
@@ -147,6 +147,54 @@ async function resetCandidates() {
     return { file, insignificant, recommendation: insignificant ? "reset-to-upstream" : "review" };
   }));
 }
-const commands = { analyze, classify, land, landed, refresh, sync, adopt, "reset-candidates": resetCandidates };
+async function cleanup() {
+  if (!a.plan) throw new Error("cleanup requires --plan <file>");
+  const plan = JSON.parse(await readFile(a.plan, "utf8"));
+  const base = ref(plan.base || a.base || `origin/${config.baseBranch}`, "cleanup base");
+  const current = ref(a.branch || "HEAD", "cleanup branch");
+  const local = new Set(range(base, current));
+  const replay = plan.replay || [];
+  const dropped = (plan.drop || []).map(item => typeof item === "string" ? { commit: item } : item);
+  const replayShas = replay.flatMap(group => group.commits || []);
+  const droppedShas = dropped.map(item => item.commit);
+  const allPlanned = [...replayShas, ...droppedShas];
+  if (new Set(allPlanned).size !== allPlanned.length) throw new Error("Cleanup plan contains duplicate commits");
+  for (const commit of allPlanned) {
+    const sha = ref(commit, "cleanup commit");
+    if (!local.has(sha)) throw new Error(`Cleanup commit is not on the selected branch: ${commit}`);
+  }
+  if (allPlanned.length !== local.size) throw new Error("Cleanup plan must classify every local commit");
+  const report = {
+    dryRun: !apply,
+    base,
+    branch: git(["branch", "--show-current"]) || a.branch || "HEAD",
+    drop: dropped.map(item => ({
+      sha: ref(item.commit, "cleanup commit"),
+      subject: item.subject || git(["show", "-s", "--format=%s", item.commit]),
+    })),
+    replay: replay.map(group => ({
+      commits: group.commits.map(commitSummary),
+      subject: group.subject || null,
+      squash: group.commits.length > 1,
+    })),
+  };
+  output(report);
+  if (!apply) return;
+  requireClean(true);
+  const backup = `backup/${(report.branch || config.baseBranch).replace(/[^A-Za-z0-9._-]/g, "-")}-${Date.now()}`;
+  git(["branch", backup, "HEAD"]);
+  git(["reset", "--keep", base]);
+  for (const group of replay) {
+    const commits = group.commits.map(commit => ref(commit, "cleanup commit"));
+    if (commits.length === 1) {
+      git(["cherry-pick", commits[0]]);
+      continue;
+    }
+    for (const commit of commits) git(["cherry-pick", "--no-commit", commit]);
+    if (!group.subject) throw new Error("Squash group requires a subject");
+    git(["commit", "-m", group.subject]);
+  }
+}
+const commands = { analyze, classify, land, landed, refresh, sync, adopt, cleanup, "reset-candidates": resetCandidates };
 try { if (!commands[command]) throw new Error(`Unknown operation: ${command}`); await commands[command](); }
 catch (e) { console.error(`upstream toolkit: ${e.message}`); process.exitCode = 1; }
