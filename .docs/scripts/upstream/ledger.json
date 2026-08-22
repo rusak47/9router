@@ -7,8 +7,8 @@
   "commits": [
     {"kind":"feature","id":"headroom-timeout","sha":"2486fd640e3d6326b6af9164e78d3c5b31c254af","value":"keep"},
     {"kind":"feature","id":"usage-latency","sha":"6b30ebbbff7b7291ce93af85feea6b0987c775f7","value":"keep"},
-    {"kind":"feature","id":"adaptive-stripper","sha":"fced7363ed9d2f62f39b6b15c4739cbe5210c1bb","value":"keep"},
-    {"kind":"feature","id":"opencode-api-key","sha":"4f9251c0635a772a90fbcbcf3f4575041ba33076","value":"keep"},
+    {"kind":"feature","id":"adaptive-stripper","sha":"fced7363ed9d2f62f39b6b15c4739cbe5210c1bb","aliases":["7c05ba93718bbbfebe6b8fa98c0bf23f61071a87"],"value":"keep"},
+    {"kind":"feature","id":"opencode-api-key","sha":"4f9251c0635a772a90fbcbcf3f4575041ba33076","aliases":["bec71c4473efd83727b8a27fa50157e6307e8f88"],"value":"keep"},
     {"kind":"cherry-pick","upstreamPr":3321,"sha":"1956f996f053b0ed355fb225ceb0c1b699ee073c","keepIfLanded":false},
     {"kind":"cherry-pick","upstreamPr":3369,"sha":"6476011c4072ee127794ed9f499b12bfa348b323","keepIfLanded":false},
     {"kind":"cherry-pick","upstreamPr":3262,"sha":"1a27f082112d2a12d7dae3ae9965752dc4dc5aad","keepIfLanded":false},

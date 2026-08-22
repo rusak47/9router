@@ -49,8 +49,18 @@ async function refresh() {
   const localCommits = range(base, current);
   const originCommits = range(base, pinned);
   const originIds = new Set(patchIds(originCommits).values());
+  const originShas = new Set(originCommits);
+  const ledger = await loadLedger();
+  const aliases = new Map(
+    ledger.commits
+      .filter(commit => commit.sha && Array.isArray(commit.aliases))
+      .flatMap(commit => commit.aliases.map(alias => [alias, commit.sha])),
+  );
   const localIds = patchIds(localCommits);
-  const dropped = localCommits.filter(commit => originIds.has(localIds.get(commit)));
+  const dropped = localCommits.filter(commit =>
+    originIds.has(localIds.get(commit)) ||
+    (aliases.has(commit) && originShas.has(aliases.get(commit))),
+  );
   const kept = localCommits.filter(commit => !dropped.includes(commit));
   const action = ancestor(pinned, current)
     ? "up-to-date"
@@ -66,7 +76,11 @@ async function refresh() {
     target: pinned,
     action,
     kept: kept.map(commitSummary),
-    dropped: dropped.map(commitSummary),
+    dropped: dropped.map(commit => ({
+      sha: commit,
+      subject: git(["show", "-s", "--format=%s", commit]),
+      reason: originIds.has(localIds.get(commit)) ? "patch-id-match" : "ledger-equivalent",
+    })),
   };
   output(plan);
   if (!apply) return;
