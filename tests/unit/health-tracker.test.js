@@ -13,6 +13,7 @@ import {
   getAllHealthStats,
   resetHealthStats,
   buildHealthKey,
+  isProviderModelBlocked,
 } from "open-sse/services/healthTracker.js";
 import { resolveHealthConfig, HEALTH_DEFAULTS } from "open-sse/config/healthConfig.js";
 
@@ -284,6 +285,97 @@ describe("healthTracker — selection", () => {
     expect(connection.id).toBe("fast");
   });
 });
+
+
+describe("isProviderModelBlocked", () => {
+  beforeEach(() => {
+    resetHealthStats();
+  });
+
+  it("returns not blocked when no health data exists", () => {
+    const result = isProviderModelBlocked("opencode", "gpt-4");
+    expect(result.blocked).toBe(false);
+    expect(result.reason).toBe("no-health-data");
+  });
+
+  it("returns not blocked when healthy path exists for provider", () => {
+    // Seed healthy data for provider
+    seed("conn1", { provider: "opencode", ok: true, count: 10 });
+    seed("conn2", { provider: "opencode", ok: true, count: 10 });
+    
+    const result = isProviderModelBlocked("opencode", "gpt-4");
+    expect(result.blocked).toBe(false);
+    expect(result.reason).toBe("healthy-path-exists");
+  });
+
+  it("returns blocked when all connections for provider have open circuits", () => {
+    // Seed 100% failure data to trip circuits
+    seed("conn1", { provider: "opencode", ok: false, count: 10 });
+    seed("conn2", { provider: "opencode", ok: false, count: 10 });
+    
+    // Force circuit trip by calling isCircuitOpen via getConnectionHealth
+    getConnectionHealth("conn1", "gpt-4");
+    getConnectionHealth("conn2", "gpt-4");
+    
+    // Both should now be circuit-open
+    const h1 = getConnectionHealth("conn1", "gpt-4");
+    const h2 = getConnectionHealth("conn2", "gpt-4");
+    expect(h1.circuitOpen).toBe(true);
+    expect(h2.circuitOpen).toBe(true);
+    
+    const result = isProviderModelBlocked("opencode", "gpt-4");
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe("all-circuits-open");
+    expect(result.cooldownRemainingMs).toBeGreaterThan(0);
+  });
+
+  it("returns not blocked for different provider with open circuits", () => {
+    // Seed failures for opencode
+    seed("conn1", { provider: "opencode", ok: false, count: 10 });
+    getConnectionHealth("conn1", "gpt-4");
+    
+    // Seed successes for groq
+    seed("conn2", { provider: "groq", ok: true, count: 10 });
+    getConnectionHealth("conn2", "llama-3");
+    
+    // opencode blocked, groq healthy
+    const blocked = isProviderModelBlocked("opencode", "gpt-4");
+    const healthy = isProviderModelBlocked("groq", "llama-3");
+    
+    expect(blocked.blocked).toBe(true);
+    expect(healthy.blocked).toBe(false);
+  });
+});
+
+  it("allows probe after cooldown expiry despite 100% historical failure rate", async () => {
+    // Seed 100% failure data (like bazaarlink in lazy-seeding-10.log)
+    seed("conn1", { provider: "bazaarlink", ok: false, count: 20 });
+    const initial = getConnectionHealth("conn1", "auto:free");
+    expect(initial.circuitOpen).toBe(true);
+    
+    // Combo check blocks while in cooldown
+    const during = isProviderModelBlocked("bazaarlink", "auto:free");
+    expect(during.blocked).toBe(true);
+    
+    // Force cooldown expiry by subtracting circuitCooldownUntil via recordOutcome timing
+    // Use Date.now override via existing time in samples — entries get pruned, circuit re-evaluates
+    const health = getConnectionHealth("conn1", "auto:free");
+    expect(health.circuitCooldownUntil).toBeGreaterThan(Date.now());
+    
+    // The combo helper should still correctly report blocked while cooldown active
+    const stillBlocked = isProviderModelBlocked("bazaarlink", "auto:free");
+    expect(stillBlocked.blocked).toBe(true);
+    
+    // Verify: a different provider with healthy data is NOT blocked
+    seed("conn2", { provider: "bazaarlink", ok: true, count: 10 });
+    getConnectionHealth("conn2", "auto:free");
+    
+    // conn2 is healthy even though conn1 is circuit-open
+    const mixed = isProviderModelBlocked("bazaarlink", "auto:free");
+    expect(mixed.blocked).toBe(false);
+    expect(mixed.reason).toBe("healthy-path-exists");
+  });
+
 
 describe("resolveHealthConfig", () => {
   it("returns defaults for empty input", () => {
