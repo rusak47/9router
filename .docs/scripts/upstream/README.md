@@ -71,6 +71,14 @@ drop entry into `replay`, add a reason, or group commits under `subject` to
 squash them. The toolkit never treats a commit as disposable solely because
 its subject contains `debug`, `test`, or `fix`.
 
+To change a classification without editing JSON manually, preview the
+modification first and add `--apply` to write it:
+
+<example>
+<command>node .docs/scripts/upstream/cli.js cleanup --plan .docs/fork-sync-state/my-branch-cleanup.json --modify 10c38bbf --action replay --reason "retain warmup behavior; debug logging is still useful during origin refresh"</command>
+<command>node .docs/scripts/upstream/cli.js cleanup --plan .docs/fork-sync-state/my-branch-cleanup.json --modify 10c38bbf --action replay --reason "retain warmup behavior; debug logging is still useful during origin refresh" --apply</command>
+</example>
+
 Backups and patch snapshots are stored in ignored `.docs` state. Resolve
 conflicts with Git and use `git rebase --abort` to abandon an operation.
 Never use this toolkit to push fork changes to `upstream`; upstream

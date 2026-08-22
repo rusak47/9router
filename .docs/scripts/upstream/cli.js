@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs, git, gitLines, ref, range, ancestor, mergeBase, patchIds, loadLedger, saveLedger, requireClean, assertPushRemote, commitSummary, config } from "./lib.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const a = parseArgs(process.argv.slice(2)), command = a._[0] || "analyze";
@@ -149,6 +149,41 @@ async function resetCandidates() {
   }));
 }
 async function cleanup() {
+  if (a.modify) {
+    if (!a.plan) throw new Error("--modify requires --plan <file>");
+    if (!["drop", "replay"].includes(a.action)) throw new Error("--action must be drop or replay");
+    if (!a.reason) throw new Error("--modify requires --reason <text>");
+    const plan = JSON.parse(await readFile(a.plan, "utf8"));
+    const sha = ref(a.modify, "cleanup commit");
+    let found = false;
+    plan.drop = (plan.drop || []).filter(item => {
+      const commit = typeof item === "string" ? item : item.commit;
+      if (commit !== sha) return true;
+      found = true;
+      return false;
+    });
+    plan.replay = (plan.replay || []).flatMap(group => {
+      const commits = (group.commits || []).filter(commit => {
+        if (commit !== sha) return true;
+        found = true;
+        return false;
+      });
+      return commits.length ? [{ ...group, commits }] : [];
+    });
+    if (!found) throw new Error(`Commit is not classified in cleanup plan: ${a.modify}`);
+    if (a.action === "drop") {
+      plan.drop.push({ commit: sha, subject: git(["show", "-s", "--format=%s", sha]), reason: a.reason });
+    } else {
+      plan.replay.push({ commits: [sha], reason: a.reason });
+    }
+    if (apply) {
+      const temporary = `${a.plan}.tmp-${process.pid}`;
+      await writeFile(temporary, `${JSON.stringify(plan, null, 2)}\n`);
+      await rename(temporary, a.plan);
+    }
+    output({ dryRun: !apply, modified: sha, action: a.action, reason: a.reason, plan });
+    return;
+  }
   if (a.generate) {
     const base = ref(a.base || `origin/${config.baseBranch}`, "cleanup base");
     const current = ref(a.branch || "HEAD", "cleanup branch");
