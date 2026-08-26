@@ -1,0 +1,16 @@
+[
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 8408,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:37:22.000Z"
+  },
+  {
+    "provider": "opencode",
+    "model": "big-pickle",
+    "totalLatency": 8117,
+    "status": "ok",
+    "timestamp": "2026-08-18T08:38:22.000Z"
+  }
+]
