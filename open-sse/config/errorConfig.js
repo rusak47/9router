@@ -44,8 +44,13 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // Cooldown durations (ms)
 const COOLDOWN = {
   long: 2 * 60 * 1000,
+  medium: 60 * 1000,
   short: 5 * 1000,
 };
+
+// Finish reasons observed on poisoned empty streams (2026-08-24 incident captures).
+// Extend only with values actually seen in ENABLE_REQUEST_LOGS dumps.
+export const POISON_FINISH_REASONS = Object.freeze(new Set(["network_error"]));
 
 /**
  * Unified error classification rules.
@@ -58,6 +63,7 @@ const COOLDOWN = {
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
+  { text: "empty stream",             cooldownMs: COOLDOWN.medium },
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
