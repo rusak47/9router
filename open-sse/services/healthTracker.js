@@ -439,7 +439,7 @@ async function seedFromHistory(connectionId, provider = null, model = null, inje
         const sample = {
           ok: !isFailure,
           latencyMs: Number(r.totalLatency) || 0,
-          at: Date.parse(r.timestamp) || Date.now(),
+          at: Date.now() - (sampleCount - i) * 30000,
         };
         entryNew.samples.push(sample);
       }
