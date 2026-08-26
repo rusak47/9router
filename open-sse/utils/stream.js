@@ -5,6 +5,7 @@ import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBu
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { POISON_FINISH_REASONS } from "../config/errorConfig.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -69,6 +70,39 @@ export function createSSEStream(options = {}) {
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
+
+  // Empty-stream poison detection (flush verdict). Passthrough tracks raw upstream
+  // values; translate mode reuses state.finishReason (raw, translators store it
+  // un-normalized for usage injection).
+  let sawTerminalFrame = false;     // any truthy finish_reason seen
+  let passthroughPoisonSeen = false; // raw finish_reason ∈ POISON_FINISH_REASONS (passthrough only)
+  let passthroughPoisonReason = null; // the raw poison value, for diagnostics
+  let toolCallEmitted = false;
+  const trackFrameSignals = (parsed) => {
+    const choice = parsed?.choices?.[0];
+    const fr = choice?.finish_reason;
+    if (fr) {
+      sawTerminalFrame = true;
+      if (POISON_FINISH_REASONS.has(fr)) {
+        passthroughPoisonSeen = true;
+        passthroughPoisonReason = fr;
+      }
+    }
+    if (choice?.delta?.tool_calls?.length ||
+        parsed?.type === "content_block_start" && parsed?.content_block?.type === "tool_use") {
+      toolCallEmitted = true;
+    }
+  };
+  // Empty-stream verdict (spec §5.1): zero usable output AND (S1 poison terminal
+  // ∨ S2 clean-close without any terminal frame). Computed BEFORE usage estimation.
+  const emptyStreamVerdict = () =>
+    totalContentLength === 0 &&
+    accumulatedThinking.length === 0 &&
+    !toolCallEmitted &&
+    (!usage || !usage.completion_tokens) &&
+    (passthroughPoisonSeen || !sawTerminalFrame)
+      ? { poisoned: true, finishReason: passthroughPoisonReason }
+      : null;
   const eventTypeCounts = {};
 
   // Track Responses API event framing for same-format passthrough (codex)
@@ -87,6 +121,18 @@ export function createSSEStream(options = {}) {
     const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
     let finalUsage = isPassthrough ? usage : state?.usage;
 
+    // Empty-stream verdict (spec §5.1/§5.2-A): computed BEFORE usage estimation.
+    // Passthrough uses emptyStreamVerdict(); translate mode checks state.finishReason.
+    const verdict = isPassthrough
+      ? emptyStreamVerdict()
+      : (totalContentLength === 0 &&
+         accumulatedThinking.length === 0 &&
+         !toolCallEmitted &&
+         (!state?.usage || !state.usage.completion_tokens) &&
+         (POISON_FINISH_REASONS.has(state?.finishReason) || (state?.finishReason == null && !sawTerminalFrame))
+           ? { poisoned: true, finishReason: state?.finishReason || null }
+           : null);
+
     if (!hasValidUsage(finalUsage) && totalContentLength > 0) {
       finalUsage = estimateUsage(body, totalContentLength, isPassthrough ? FORMATS.OPENAI : sourceFormat);
       if (isPassthrough) usage = finalUsage; else state.usage = finalUsage;
@@ -102,7 +148,7 @@ export function createSSEStream(options = {}) {
       onStreamComplete({
         content: accumulatedContent,
         thinking: accumulatedThinking
-      }, finalUsage, ttftAt);
+      }, finalUsage, ttftAt, verdict);
     }
   };
 
@@ -182,6 +228,8 @@ export function createSSEStream(options = {}) {
                 continue;
               }
 
+              trackFrameSignals(parsed);
+
               const delta = parsed.choices?.[0]?.delta;
               const content = delta?.content;
               const reasoning = delta?.reasoning_content;
@@ -245,6 +293,8 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+
+        trackFrameSignals(parsed);
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -353,6 +403,11 @@ export function createSSEStream(options = {}) {
               continue; // Skip this empty chunk
             }
 
+            if (item?.choices?.[0]?.delta?.tool_calls?.length ||
+                (item?.type === "content_block_start" && item?.content_block?.type === "tool_use")) {
+              toolCallEmitted = true;
+            }
+
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
             if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
@@ -404,7 +459,7 @@ export function createSSEStream(options = {}) {
             controller.enqueue(sharedEncoder.encode(doneOutput));
           }
 
-          finalizeStream();
+finalizeStream();
           return;
         }
 
@@ -479,7 +534,7 @@ export function createSSEStream(options = {}) {
           streamDoneSent = true;
         }
 
-        finalizeStream();
+finalizeStream();
       } catch (error) {
         console.log("Error in flush:", error);
         finalizeStream();

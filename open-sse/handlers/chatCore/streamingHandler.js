@@ -110,16 +110,20 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
+export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, onStreamVerdict }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  const onStreamComplete = (contentObj, usage, ttftAt, verdict) => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+
+    // Empty-stream accounting: record as empty_stream, not success (spec §5.2-A)
+    const isEmptyStream = verdict?.poisoned === true;
+    const status = isEmptyStream ? "empty_stream" : "success";
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -130,7 +134,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       providerResponse: safeContent,
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
-      status: "success"
+      status
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
@@ -138,6 +142,21 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     // Persist stream usage to DB (no console line; the "📊 done" line below is authoritative)
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
+
+    // Fire-and-forget empty-stream verdict → app layer for cooldown/accounting (spec §5.2-A)
+    if (isEmptyStream && onStreamVerdict) {
+      try {
+        onStreamVerdict(verdict).catch(err => console.error("[onStreamVerdict] callback error:", err?.message || err));
+      } catch (e) {
+        console.error("[onStreamVerdict] sync error:", e?.message || e);
+      }
+
+      // Additional explicit log line for empty streams (matches existing errorLine style)
+      if (log?.errorLine) {
+        const fr = verdict.finishReason || "none";
+        log.errorLine(reqTag, "✗", `EMPTYSTREAM · ${provider}/${model} · finish_reason=${fr} · 0 completion tokens`);
+      }
+    }
   };
 
   return { onStreamComplete, streamDetailId };
