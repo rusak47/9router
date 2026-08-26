@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { EMPTY_STREAM_GATE_MS } from "../config/runtimeConfig.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -266,6 +267,126 @@ export function getComboModelsFromData(modelStr, combosData) {
 }
 
 /**
+ * Classify a parsed SSE data frame: "content" (usable output), "error"
+ * (explicit upstream error payload), or "empty" (keepalive/role/terminal-only).
+ * Deliberately does NOT count delta.role or finish_reason as meaningful — the
+ * first chunk of every OpenAI-compatible stream carries role, and poisoned
+ * terminal frames carry non-standard finish_reason; counting either would open
+ * the gate on the very streams it exists to catch.
+ */
+function classifySseFrame(parsed) {
+  if (!parsed || typeof parsed !== "object") return "empty";
+  if (parsed.error) return "error";
+  const choice = parsed.choices?.[0];
+  const delta = choice?.delta;
+  if (delta?.content || delta?.reasoning_content || delta?.text ||
+      (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) ||
+      typeof choice?.text === "string" && choice.text) return "content";
+  if (parsed.type === "content_block_delta" || parsed.type === "content_block_start") return "content";
+  if (parsed.candidates?.some((c) => c?.content?.parts?.length)) return "content";
+  if (parsed.response?.candidates?.some((c) => c?.content?.parts?.length)) return "content";
+  if (typeof parsed.type === "string" &&
+      (parsed.type.includes("output_text") || parsed.type.includes("function_call"))) return "content";
+  return "empty";
+}
+
+/**
+ * Probe an ok SSE response for meaningful content before committing it to the
+ * combo chain. Tee's the body: the client branch flows untouched from the first
+ * byte (zero added latency); a parallel probe branch races to find one
+ * meaningful frame. Outcomes:
+ *   - meaningful frame found  → pass response through (probe cancelled)
+ *   - EOF with zero usable frames, or an explicit upstream error payload
+ *                             → discard body, synthesize 503 {error:{message:"empty stream…"}}
+ *   - probe window expires    → fail OPEN, pass response through
+ * The synthetic 503 flows through existing combo fall-through and
+ * markAccountUnavailable machinery; its message text matches the ERROR_RULES
+ * "empty stream" rule so both detection paths converge on COOLDOWN.medium.
+ */
+export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GATE_MS } = {}) {
+  const contentType = response.headers?.get?.("content-type") || "";
+  if (!response.body || !contentType.includes("text/event-stream")) {
+    return { response, rejected: false };
+  }
+
+  const [probe, client] = response.body.tee();
+  const passThrough = () => {
+    probe.cancel().catch(() => {});
+    return { response: new Response(client, { status: response.status, statusText: response.statusText, headers: response.headers }), rejected: false };
+  };
+
+  const probeTask = (async () => {
+    const reader = probe.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let lastFinishReason = null;
+    const readFrame = (payload) => {
+      let parsed;
+      try { parsed = JSON.parse(payload); } catch { return "content"; }
+      const fr = parsed.choices?.[0]?.finish_reason;
+      if (fr) lastFinishReason = fr;
+      return classifySseFrame(parsed);
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:") || trimmed.slice(5).trim() === "[DONE]") continue;
+          const payload = trimmed.slice(5).trim();
+          const kind = readFrame(payload);
+          if (kind === "content") return { verdict: "content" };
+          if (kind === "error") {
+            let errorText = null;
+            try {
+              const msg = JSON.parse(payload)?.error?.message;
+              if (typeof msg === "string") errorText = msg;
+            } catch { /* keep null */ }
+            return { verdict: "error", errorText };
+          }
+        }
+      }
+    } catch {
+      // Probe decode/read failure must never break the client stream — fail open.
+      return { verdict: "timeout" };
+    }
+    return { verdict: "empty", finishReason: lastFinishReason };
+  })();
+
+  const timeoutPill = new Promise((resolve) => setTimeout(() => resolve({ verdict: "timeout" }), timeoutMs));
+  let outcome;
+  try {
+    outcome = await Promise.race([probeTask, timeoutPill]);
+  } catch {
+    outcome = { verdict: "timeout" };
+  }
+
+  if (outcome.verdict === "content" || outcome.verdict === "timeout") {
+    return passThrough();
+  }
+
+    // Empty (EOF without usable frames) or explicit upstream error payload — reject.
+  client.cancel().catch(() => {});
+  // Message MUST contain "empty stream" — the ERROR_RULES text rule keys on it.
+  const detail = outcome.verdict === "error"
+    ? (outcome.errorText ? `upstream error: ${outcome.errorText}` : "upstream error frame")
+    : `finish_reason=${outcome.finishReason || "none"}`;
+  const message = `empty stream (${detail})`;
+  return {
+    response: new Response(
+      JSON.stringify({ error: { message, type: "server_error" } }),
+      { status: 503, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+    ),
+    rejected: true,
+    message,
+  };
+}
+
+/**
  * Handle combo chat with fallback
  * @param {Object} options
  * @param {Object} options.body - Request body
@@ -302,8 +423,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
-      
+      let rawResult = await handleSingleModel(body, modelStr);
+
+      // Empty-stream gate (#3463): probe ok SSE responses for meaningful content
+      // before committing; convert dead streams into 503 so the loop falls through.
+      if (rawResult?.ok) {
+        const gated = await rejectEmptyStream(rawResult);
+        if (gated.rejected) {
+          log.warn("COMBO", `Model ${modelStr} empty stream rejected → 503 (${gated.message})`);
+        }
+        rawResult = gated.response;
+      }
+      const result = rawResult;
+
       // Success (2xx) - return response
       if (result.ok) {
         log.info("COMBO", `Model ${modelStr} succeeded`);
