@@ -295,6 +295,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
+      },
+      // Empty-stream flush verdict (spec §5.2-A): mark the account unavailable so
+      // subsequent requests skip the poisoned model. Message text "empty stream…"
+      // matches the ERROR_RULES text rule → COOLDOWN.medium. Fire-and-forget.
+      onStreamVerdict: async (verdict) => {
+        if (!verdict?.poisoned) return;
+        await markAccountUnavailable(
+          credentials.connectionId, 200,
+          `empty stream (finish_reason=${verdict.finishReason || "none"})`, provider, model);
       }
     });
 
