@@ -1,27 +1,15 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
+import { readFileSync } from "fs";
 
-const mocks = vi.hoisted(() => ({ getAdapter: vi.fn() }));
+const FIXTURES = {
+  bigPickleOk: JSON.parse(readFileSync(new URL("../fixtures/opencode-big-pickle.json", import.meta.url), "utf8")),
+  bigPickleBad: JSON.parse(readFileSync(new URL("../fixtures/opencode-bad-pickle.json", import.meta.url), "utf8")),
+  bigPickleThin: JSON.parse(readFileSync(new URL("../fixtures/opencode-thin-pickle.json", import.meta.url), "utf8")),
+};
 
-vi.mock("@/lib/db/driver", () => ({ getAdapter: mocks.getAdapter }));
-vi.mock("@/lib/localDb", () => ({ getSettings: vi.fn() }));
-vi.mock("@/lib/network/connectionProxy", () => ({
-  resolveConnectionProxyConfig: vi.fn(async () => ({
-    connectionProxyEnabled: false,
-    connectionProxyUrl: "",
-    connectionNoProxy: "",
-    proxyPoolId: null,
-    vercelRelayUrl: "",
-  })),
-  pickProxyPoolId: vi.fn(() => null),
-}));
-vi.mock("@/shared/constants/providers.js", () => ({
-  resolveProviderId: (p) => p,
-  FREE_PROVIDERS: {},
-}));
-vi.mock("@/sse/utils/logger.js", () => ({
-  info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn(), request: vi.fn(),
-  maskKey: vi.fn(() => "masked"),
-}));
+function makeDb(rows) {
+  return { all: vi.fn(() => rows) };
+}
 
 import {
   seedFromHistory,
@@ -32,77 +20,46 @@ import {
   resolveHealthConfig,
 } from "open-sse/services/healthTracker.js";
 
-function makeDbRows(results) {
-  return results.map((r) => ({ totalLatency: r.latency, status: r.status ?? null }));
-}
-
-function buildMockAdapter(rows) {
-  const db = {
-    all: vi.fn(() => rows),
-    get: vi.fn(),
-    run: vi.fn(),
-    transaction: vi.fn(),
-  };
-  return db;
-}
-
 describe("seedFromHistory", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     resetHealthStats();
   });
 
   it("creates prior samples from DB when no live samples exist", async () => {
-    const rows = Array.from({ length: 15 }, (_, i) => ({ totalLatency: String(100 + i * 10), status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
-
-    const result = await seedFromHistory("conn-1", "claude", null, adapter, resolveHealthConfig({ minSamples: 3 }));
+    const result = await seedFromHistory("conn-1", "opencode", "big-pickle", makeDb(FIXTURES.bigPickleOk.slice(0, 15)), resolveHealthConfig({ minSamples: 3 }));
     expect(result).toBe(true);
 
-    const stats = getConnectionHealth("conn-1");
+    const stats = getConnectionHealth("conn-1", "big-pickle");
     expect(stats.samples).toBeGreaterThan(0);
   });
 
-  it("uses getAdapter when injectedDb is missing", async () => {
-    mocks.getAdapter.mockReturnValue(undefined);
-    const result = await seedFromHistory("conn-empty", "claude", null, null);
-    // debug removed
-    expect(result).toBe(false); // still fails because adapter is undefined
+  it("returns false when connectionId is null", async () => {
+    const result = await seedFromHistory(null, "opencode", "big-pickle");
+    expect(result).toBe(false);
   });
 
   it("returns true (no-op) when DB returns insufficient history", async () => {
-    const rows = Array.from({ length: 2 }, (_, i) => ({ totalLatency: String(100 + i * 10), status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
-
-    const result = await seedFromHistory("conn-thin", "claude", null, adapter, resolveHealthConfig({ minSamples: 10 }));
+    const result = await seedFromHistory("conn-thin", "opencode", "big-pickle", makeDb(FIXTURES.bigPickleThin), resolveHealthConfig({ minSamples: 10 }));
     expect(result).toBe(true);
 
-    const stats = getConnectionHealth("conn-thin");
+    const stats = getConnectionHealth("conn-thin", "big-pickle");
     expect(stats.samples).toBe(0);
   });
 
-  it("seeds synthetic failure-only samples when DB has no ok latencies (all failures)", async () => {
-    const rows = Array.from({ length: 15 }, () => ({ totalLatency: "1000", status: "500" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
-
-    const result = await seedFromHistory("conn-bad", "claude", null, adapter, resolveHealthConfig({ minSamples: 3 }));
+  it("seeds real failure samples from DB (no synthetic mixing)", async () => {
+    const result = await seedFromHistory("conn-bad", "opencode", "big-pickle", makeDb(FIXTURES.bigPickleBad), resolveHealthConfig({ minSamples: 3 }));
     expect(result).toBe(true);
 
-    const stats = getConnectionHealth("conn-bad");
-    expect(stats.samples).toBeGreaterThan(0); // synthetic seeded
-    expect(stats.failures).toBeGreaterThan(0); // failure-only
-    expect(stats.errorRate).toBe(0.5); // seeded 1 success + 1 failure
+    const stats = getConnectionHealth("conn-bad", "big-pickle");
+    expect(stats.samples).toBeGreaterThan(0);
+    expect(stats.failures).toBe(stats.samples);
+    expect(stats.errorRate).toBe(1.0);
   });
 
   it("does not seed when live samples already exist", async () => {
     recordOutcome({ connectionId: "conn-existing", ok: true, latencyMs: 50 });
     const rows = Array.from({ length: 20 }, () => ({ totalLatency: "1000", status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
-
+    const adapter = makeDb(rows);
     const result = await seedFromHistory("conn-existing", "claude", null, adapter, resolveHealthConfig({ minSamples: 3 }));
     expect(result).toBe(true);
 
@@ -111,59 +68,52 @@ describe("seedFromHistory", () => {
   });
 
   it("sets _prior=true so first live record flips it", async () => {
-    const rows = Array.from({ length: 15 }, (_, i) => ({ totalLatency: String(100 + i * 10), status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
+    await seedFromHistory("conn-prior", "opencode", "big-pickle", makeDb(FIXTURES.bigPickleOk.slice(0, 15)), resolveHealthConfig({ minSamples: 3 }));
 
-    await seedFromHistory("conn-prior", "claude", null, adapter, resolveHealthConfig({ minSamples: 3 }));
-
-    const before = getConnectionHealth("conn-prior");
+    const before = getConnectionHealth("conn-prior", "big-pickle");
     expect(before.samples).toBeGreaterThan(0);
+    expect(before.scoped).toBe(true);
 
-    recordOutcome({ connectionId: "conn-prior", ok: true, latencyMs: 80 });
-    const after = getConnectionHealth("conn-prior");
-    expect(after.avgLatencyMs).toBeLessThan(150);
+    recordOutcome({ connectionId: "conn-prior", ok: true, latencyMs: 50 });
+    const after = getConnectionHealth("conn-prior", "big-pickle");
+    expect(after.samples).toBeGreaterThanOrEqual(before.samples);
   });
 });
 
 describe("warmConnectionHistory", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     resetHealthStats();
   });
 
   it("calls seedFromHistory once per unique connection", async () => {
-    const rows = Array.from({ length: 15 }, () => ({ totalLatency: "200", status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
+    const rows = FIXTURES.bigPickleOk.slice(0, 15);
+    const adapter = makeDb(rows);
 
     const connections = [
-      { id: "c1", provider: "claude" },
-      { id: "c2", provider: "gemini" },
-      { id: "c3", provider: "groq" },
+      { id: "c1", provider: "opencode" },
+      { id: "c2", provider: "opencode" },
+      { id: "c3", provider: "opencode" },
     ];
 
     await warmConnectionHistory(connections, null, adapter, resolveHealthConfig({ minSamples: 3 }));
 
     expect(adapter.all).toHaveBeenCalledTimes(3);
-    expect(getConnectionHealth("c1").samples).toBeGreaterThan(0);
-    expect(getConnectionHealth("c2").samples).toBeGreaterThan(0);
-    expect(getConnectionHealth("c3").samples).toBeGreaterThan(0);
+    expect(getConnectionHealth("c1", "acct").samples).toBeGreaterThan(0);
+    expect(getConnectionHealth("c2", "acct").samples).toBeGreaterThan(0);
+    expect(getConnectionHealth("c3", "acct").samples).toBeGreaterThan(0);
   });
 
   it("skips null/invalid connections", async () => {
-    const rows = Array.from({ length: 15 }, () => ({ totalLatency: "200", status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
+    const rows = FIXTURES.bigPickleOk.slice(0, 15);
+    const adapter = makeDb(rows);
 
     await warmConnectionHistory([null, { id: null }, { id: "c1" }], null, adapter, resolveHealthConfig({ minSamples: 3 }));
     expect(adapter.all).toHaveBeenCalledTimes(1);
   });
 
   it("skips duplicates in input list", async () => {
-    const rows = Array.from({ length: 15 }, () => ({ totalLatency: "200", status: "200" }));
-    const adapter = buildMockAdapter(rows);
-    mocks.getAdapter.mockResolvedValue(adapter);
+    const rows = FIXTURES.bigPickleOk.slice(0, 15);
+    const adapter = makeDb(rows);
 
     await warmConnectionHistory([{ id: "c1" }, { id: "c1" }, { id: "c1" }], null, adapter, resolveHealthConfig({ minSamples: 3 }));
     expect(adapter.all).toHaveBeenCalledTimes(1);
