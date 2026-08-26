@@ -110,7 +110,7 @@ describe("healthTracker — circuit breaker", () => {
     expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(false);
   });
 
-  it("escalates backoff if still failing after cooldown expires", () => {
+  it("opens on initial trip, then half-open after cooldown expires", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const cfg = resolveHealthConfig({ circuitMinSamples: 4, circuitCooldownMs: 60_000, circuitBackoffFactor: 2, sampleTtlMs: 3_600_000 });
@@ -119,25 +119,49 @@ describe("healthTracker — circuit breaker", () => {
     const first = getConnectionHealth("a", null, cfg);
     expect(first.circuitCooldownUntil).toBeGreaterThan(Date.now());
 
-    // After first cooldown expires (60s), error rate still 100% -> escalate to 120s
+    // After cooldown expires, enters HALF_OPEN (probe allowed) - does not escalate on stale samples
     vi.setSystemTime(new Date("2026-01-01T00:02:00Z"));
     const second = getConnectionHealth("a", null, cfg);
-    expect(second.circuitOpen).toBe(true); // stays open with escalated backoff
-    expect(second.circuitCooldownUntil).toBeGreaterThan(first.circuitCooldownUntil);
+    expect(second.circuitOpen).toBe(false); // half-open
+    expect(second.circuitHalfOpen).toBe(true);
   });
 
-  it("closes after cooldown when error rate drops (actual recovery)", () => {
+  it("escalates backoff on probe failure after half-open", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-    const cfg = resolveHealthConfig({ circuitMinSamples: 4, circuitCooldownMs: 60_000, circuitErrorRate: 0.5, sampleTtlMs: 3_600_000 });
-    seed("a", { ok: false, count: 4 }); // 100% error
+    const cfg = resolveHealthConfig({ circuitMinSamples: 4, circuitCooldownMs: 60_000, circuitBackoffFactor: 2, sampleTtlMs: 3_600_000 });
+    seed("a", { ok: false, count: 4 });
     expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(true);
 
-    // Add successes to bring error rate below threshold
-    seed("a", { ok: true, count: 20 });
-
+    // Cooldown expires -> half-open
     vi.setSystemTime(new Date("2026-01-01T00:02:00Z"));
-    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(false); // actual recovery
+    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(false);
+
+    // Probe fails -> escalate backoff (120s next)
+    recordOutcome({ connectionId: "a", ok: false, latencyMs: 100, config: cfg });
+    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(true);
+    const escalated = getConnectionHealth("a", null, cfg);
+    expect(escalated.circuitHalfOpen).toBe(false);
+  });
+
+  it("closes circuit when probe succeeds after half-open", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const cfg = resolveHealthConfig({ circuitMinSamples: 4, circuitCooldownMs: 60_000, circuitBackoffFactor: 2, circuitErrorRate: 0.5, sampleTtlMs: 3_600_000 });
+    seed("a", { ok: false, count: 4 });
+    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(true);
+
+    // Cooldown expires -> half-open
+    vi.setSystemTime(new Date("2026-01-01T00:02:00Z"));
+    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(false);
+
+    // Probe succeeds -> circuit resets fully
+    recordOutcome({ connectionId: "a", ok: true, latencyMs: 50, config: cfg });
+    expect(getConnectionHealth("a", null, cfg).circuitOpen).toBe(false);
+    expect(getConnectionHealth("a", null, cfg).circuitHalfOpen).toBe(false);
+    const recovered = getConnectionHealth("a", null, cfg);
+    expect(recovered.consecutiveTrips).toBe(0);
+    expect(recovered.circuitCooldownUntil).toBe(0);
   });
 });
 
