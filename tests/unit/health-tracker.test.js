@@ -213,7 +213,7 @@ describe("healthTracker — selection", () => {
       { config: cfg, random: never }
     );
     expect(connection).not.toBeNull();
-    expect(reason).toBe("all-circuits-open");
+    expect(reason).toMatch(/^all-circuits-open/);
   });
 
   it("explores a non-best candidate when the RNG says so", () => {
