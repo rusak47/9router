@@ -180,3 +180,27 @@ export function shouldDefaultClaudeToolType(provider, finalFormat, tools, PROVID
   );
 }
 
+// Backfill missing `name` on role:"tool" messages from the preceding assistant
+// message's tool_calls[].function.name. Some providers (kilo.ai, llama.cpp)
+// require `name` on tool messages to resolve tool_call_id. Only fills when the
+// name is missing and the id matches the most recent assistant turn.
+export function normalizeToolMessageNames(body) {
+  if (!body.messages || !Array.isArray(body.messages)) return body;
+
+  let pendingNames = null; // Map<tool_call_id, name> from most-recent assistant turn
+  for (const msg of body.messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+      pendingNames = new Map();
+      for (const tc of msg.tool_calls) {
+        if (tc.id && tc.function?.name) pendingNames.set(tc.id, tc.function.name);
+      }
+    } else if (msg.role === "tool" && !msg.name && msg.tool_call_id && pendingNames?.has(msg.tool_call_id)) {
+      msg.name = pendingNames.get(msg.tool_call_id);
+    } else if (msg.role !== "assistant") {
+      pendingNames = null;
+    }
+  }
+
+  return body;
+}
+
