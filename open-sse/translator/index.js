@@ -1,5 +1,5 @@
 import { FORMATS } from "./formats.js";
-import { ensureToolCallIds, fixMissingToolResponses } from "./concerns/toolCall.js";
+import { ensureToolCallIds, fixMissingToolResponses, normalizeToolMessageNames } from "./concerns/toolCall.js";
 import { prepareClaudeRequest } from "./formats/claude.js";
 import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
@@ -68,6 +68,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // parallel tool results.
   if (targetFormat !== FORMATS.KIRO) {
     fixMissingToolResponses(result);
+    normalizeToolMessageNames(result);
   }
 
   // Capture thinking intent from the original (pre-translation) body, before any
