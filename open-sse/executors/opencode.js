@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import https from "https";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
@@ -13,6 +14,56 @@ import {
   coerceResponsesArguments,
   coerceResponsesOutput,
 } from "../translator/formats/responsesApi.js";
+
+// Machine's real public IPv4, discovered once (direct https — intentionally
+// NOT patched proxy-aware fetch, so we learn home/public egress even
+// while outbound proxy enabled).
+let _publicIp = null;
+let _publicIpFetching = false;
+const PUBLIC_IP_PROBES = ["https://4.icanhazip.com", "https://ip.sb", "https://ifconfig.me/ip"];
+
+function discoverPublicIp() {
+  if (_publicIp || _publicIpFetching) return _publicIp;
+  _publicIpFetching = true;
+  const probe = (url, cb) => {
+    https.get(url, { timeout: 4000 }, (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => cb(d.trim()));
+    }).on("error", () => cb(""));
+  };
+  const accept = (v) => /^(\d{1,3}\.){3}\d{1,3}$/.test(v);
+  probe(PUBLIC_IP_PROBES[0], (v) => {
+    if (accept(v)) {
+      _publicIp = v;
+      _publicIpFetching = false;
+      return;
+    }
+    probe(PUBLIC_IP_PROBES[1], (v2) => {
+      if (accept(v2)) {
+        _publicIp = v2;
+        _publicIpFetching = false;
+        return;
+      }
+      probe(PUBLIC_IP_PROBES[2], (v3) => {
+        _publicIp = accept(v3) ? v3 : "";
+        _publicIpFetching = false;
+      });
+    });
+  });
+  return _publicIp;
+}
+
+// Private/loopback IPs that should NOT be forwarded as x-real-ip
+function isPrivateIp(ip) {
+  if (!ip || typeof ip !== "string") return true;
+  const clean = ip.replace(/^::ffff:/, "").trim();
+  if (clean === "127.0.0.1" || clean === "::1" || clean === "localhost") return true;
+  if (clean.startsWith("10.") || clean.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(clean)) return true;
+  if (clean.startsWith("fc00:") || clean.startsWith("fe80:")) return true;
+  return false;
+}
 
 const OPENCODE_UA = "opencode/1.18.31";
 const MAX_SESSION_LENGTH = 256;
@@ -323,7 +374,18 @@ function isMessagesModel(model) {
 }
 
 function resolveOpencodeSession(body, credentials, providerSessionId, clientTool) {
+  // Try to get session from client headers first (conversation continuity)
   const headers = credentials?.rawHeaders || {};
+  const clientSession = headers["x-client-session-id"] || headers["x-opencode-session"];
+  if (clientSession) return clientSession;
+
+  // Fallback: derive from request body conversation pattern (stable for same convo)
+  const messages = body?.messages || [];
+  const firstUser = messages.find((m) => m?.role === "user");
+  if (firstUser?.content) {
+    return `ses_${crypto.createHash("sha256").update(String(firstUser.content)).digest("hex").slice(0, 26)}`;
+  }
+  // Ultimate fallback: use upstream session manager
   const native = nativeSession(headers);
   if (native) return native;
 
@@ -470,13 +532,18 @@ export class OpenCodeExecutor extends BaseExecutor {
     };
   }
 
-  transformRequest(model, body, stream, credentials) {
+  transformRequest(model, body, stream = true, credentials) {
+    // Stash resolved session on per-request credentials object instead
+    // of instance field: OpenCodeExecutor is a module-level singleton,
+    // concurrent requests would overwrite _currentSessionId between
+    // transformRequest and buildHeaders, bleeding sessions across requests.
+    if (credentials) credentials._opencodeSession = resolveOpencodeSession(body, credentials);
+    
     if (body && typeof body === "object" && model && !body.model) body.model = model;
     // Zen rejects non-streaming requests on free models with 403 FreeTierError;
     // always stream upstream and let the handler layer aggregate for non-stream clients.
     if (body && typeof body === "object") body.stream = true;
     if (isResponsesModel(model || body?.model) && body && typeof body === "object") {
-      // ponytail: chỉ model đã xác nhận auto-only; mở allowlist khi có bằng chứng.
       if ("tool_choice" in body && body.tool_choice !== "auto"
         && this.config.quirks?.forceAutoToolChoiceModels?.includes(baseModelId(model))) {
         body.tool_choice = "auto";
@@ -486,6 +553,7 @@ export class OpenCodeExecutor extends BaseExecutor {
       if (!Array.isArray(body.input) || body.input.length === 0) {
         body.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "..." }] }];
       }
+
       // Responses API names the output cap max_output_tokens and takes thinking
       // as reasoning:{effort,summary} — normalize the Chat fields at this boundary.
       if (body.max_output_tokens === undefined) {
@@ -519,10 +587,18 @@ export class OpenCodeExecutor extends BaseExecutor {
     return `${base}/zen/v1/chat/completions`;
   }
 
+  // OpenCode Zen's free tier rate-limits per real egress IP (daily
+  // budget per IP, reset at UTC midnight). No automatic switching:
+  // when current IP's budget is exhausted gateway answers
+  // 429 FreeUsageLimitError — user picks another node/egress manually.
+  async execute(args) {
+    return super.execute(args);
+  }
+
   buildHeaders(credentials, stream = true, url = "") {
     const raw = credentials?.rawHeaders || {};
     const lower = {};
-    for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
+    for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v.toLowerCase();
 
     const downstreamUa = lower["user-agent"] || "";
     const isOpencodeDownstream = hasValidOpencodeVersion(downstreamUa);
@@ -531,15 +607,28 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamReq = normalizeRequestId(lower["x-opencode-request"]);
     const requestId = credentials?.[REQ_FIELD] || downstreamReq || generateRequestId();
 
+    const key = credentials?.apiKey;
+
+    // OpenCode Zen's free tier is IP-based (ipRateLimiter.ts: headers.get("x-real-ip")
+    // reads the real egress IP). CDN sets x-real-ip to TCP client-supplied IP so
+    // header is best-effort — reliable per-user isolation comes from
+    // real egress IPs. Only real PUBLIC IPs are forwarded: custom-server.js stamps
+    // unspoofable TCP peer as x-9r-real-ip, which is 127.0.0.1 for local clients —
+    // forwarding would put every local 9router user into one shared loopback bucket.
+    // For loopback/private peers we fall back to machine's own public IP.
+    const rawIp = (lower["x-9r-real-ip"] || lower["x-real-ip"] || "").trim();
+    const clientIp = rawIp && !isPrivateIp(rawIp) ? rawIp : (rawIp ? discoverPublicIp() : "");
+
     const headers = {
       "Content-Type": "application/json",
-      "Authorization": "Bearer public",
+      "Authorization": `Bearer ${key || "public"}`,
       "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
-      "x-opencode-client": lower["x-opencode-client"] || "desktop",
+      "x-opencode-client": lower["x-opencode-client"] || "cli",
       "x-opencode-session": session,
       "x-opencode-request": requestId,
       "x-opencode-project": lower["x-opencode-project"] || "global",
-      "Accept": stream ? "text/event-stream" : "*/*",
+      ...(clientIp ? { "x-real-ip": clientIp } : {}),
+      "Accept": stream ? "text/event-stream" : "*/*",      
     };
     if (url.endsWith("/messages")) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
     return headers;
