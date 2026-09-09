@@ -13,6 +13,7 @@ export default {
   category: "apikey",
   authType: "apikey",
   authModes: ["apikey"],
+  publicFallback: true,
   transport: {
     baseUrl: "https://opencode.ai",
     headers: {

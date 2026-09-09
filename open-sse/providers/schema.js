@@ -13,6 +13,7 @@ import { DEFAULT_RETRY_CONFIG, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtim
  * @property {string}   category      "apikey"|"oauth"|"freeTier"|... drives UI grouping. REQUIRED.
  * @property {string}  [authType]     "apikey"|"oauth" auth hint.
  * @property {string[]}[authModes]    Allowed auth modes when provider supports both.
+ * @property {boolean} [publicFallback] When true, allow requests without API key for apikey-category providers.
  * @property {boolean} [hasOAuth]     Provider exposes an OAuth flow.
  * @property {boolean} [noAuth]       Provider needs no credentials (local/free).
  * @property {Object}  [display]      UI: {name,icon,color,textIcon,website,notice,deprecated,deprecationNotice,kindNotice,mediaPriority}.
