@@ -2,6 +2,8 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
+import { LATENCY_AWARE_STRATEGY } from "open-sse/config/healthConfig.js";
+import { selectHealthiestConnection, warmConnectionHistory } from "open-sse/services/healthTracker.js";
 import { resolveProviderId, FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
@@ -110,6 +112,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
+    await warmConnectionHistory(connections, model);
     connections.forEach(c => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
@@ -160,6 +163,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
+    } else if (strategy === LATENCY_AWARE_STRATEGY) {
+      // Score live latency + error rate instead of walking a static order
+      const { connection: picked, reason } = selectHealthiestConnection(availableConnections, {
+        model,
+        config: settings.latencyAwareConfig,
+      });
+      connection = picked || availableConnections[0];
+      log.debug("AUTH", `${provider} | latency-aware → ${connection.id?.slice(0, 8)} (${reason})`);
+      await updateProviderConnection(connection.id, {
+        lastUsedAt: new Date().toISOString(),
+        consecutiveUseCount: 1
+      });
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 
