@@ -10,14 +10,15 @@ export default {
     color: "#E87040",
     textIcon: "OC",
   },
-  category: "free",
-  noAuth: true,
+  category: "apikey",
+  authType: "apikey",
+  authModes: ["apikey"],
+  publicFallback: true,
   transport: {
     baseUrl: "https://opencode.ai",
     headers: {
       "x-opencode-client": "desktop",
     },
-    noAuth: true,
   },
   models: [
     // Muse Spark models are served by /zen/v1/responses; the rest stay on
