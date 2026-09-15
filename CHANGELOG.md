@@ -30,6 +30,7 @@
 - **CodeBuddy-CN**: replace `deepseek-v4-flash` with `deepseek-v4.1-flash`
 
 ## Fixes
+- **Combo**: switch empty-stream probe from elapsed-time to silence-based window (EMPTY_STREAM_GATE_MS now fires only when no SSE frames arrive within the window); reasoning-only pre-content error streams are now correctly rejected with synthesized 503, triggering combo fall-through (#3463)
 - **Tools**: scope Claude tool type defaulting to gateways declaring `requireClaudeToolType` — the global default broke Anthropic-compatible endpoints that only accept the legacy typeless tool shape (#3905)
 - **Claude**: cap re-anchored `cache_control` at the 4-marker budget so a spent budget no longer 400s and triggers a full combo failover; wrap bare single-object content turns before the mid-conversation-system fold
 - **Cline / Airforce**: unwrap the `{"success":true,"data":…}` envelope on non-stream chat completions (#3644); add the live Cline/ClinePass model catalog and refresh Airforce free models
