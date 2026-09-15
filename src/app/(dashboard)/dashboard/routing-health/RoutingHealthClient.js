@@ -16,6 +16,7 @@ const CONFIG_FIELDS = [
   { key: "circuitErrorRate", label: "Circuit Error Rate", hint: "Error rate that trips the breaker", min: 0.1, max: 1, step: 0.05 },
   { key: "circuitMinSamples", label: "Circuit Min Samples", hint: "Calls needed before tripping", min: 2, max: 100, step: 1 },
   { key: "circuitCooldownMs", label: "Circuit Cooldown (ms)", hint: "How long a tripped account is skipped", min: 1000, max: 1800000, step: 1000 },
+  { key: "circuitCooldownMaxMs", label: "Circuit Max Cooldown (ms)", hint: "Cap for escalated cooldown during repeated failures", min: 1000, max: 43200000, step: 1000 },
   { key: "sampleTtlMs", label: "Sample TTL (ms)", hint: "Age after which samples are ignored", min: 60000, max: 86400000, step: 60000 },
 ];
 
