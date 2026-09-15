@@ -300,7 +300,7 @@ function classifySseFrame(parsed) {
  *   - meaningful frame found  → pass response through (probe cancelled)
  *   - EOF with zero usable frames, or an explicit upstream error payload
  *                             → discard body, synthesize 503 {error:{message:"empty stream…"}}
- *   - probe window expires    → fail OPEN, pass response through
+ *   - silence window expires (no frames at all) → fail OPEN, pass response through
  * The synthetic 503 flows through existing combo fall-through and
  * markAccountUnavailable machinery; its message text matches the ERROR_RULES
  * "empty stream" rule so both detection paths converge on COOLDOWN.medium.
@@ -317,6 +317,20 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
     return { response: new Response(client, { status: response.status, statusText: response.statusText, headers: response.headers }), rejected: false };
   };
 
+  const readWithSilenceTimeout = async (reader) => {
+    let timer;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve({ verdict: "timeout" }), timeoutMs);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const probeTask = (async () => {
     const reader = probe.getReader();
     const decoder = new TextDecoder();
@@ -331,7 +345,12 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
     };
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const readOutcome = await readWithSilenceTimeout(reader);
+        if (readOutcome.verdict === "timeout") {
+          reader.cancel().catch(() => {});
+          return { verdict: "timeout" };
+        }
+        const { done, value } = readOutcome;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -359,10 +378,9 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
     return { verdict: "empty", finishReason: lastFinishReason };
   })();
 
-  const timeoutPill = new Promise((resolve) => setTimeout(() => resolve({ verdict: "timeout" }), timeoutMs));
   let outcome;
   try {
-    outcome = await Promise.race([probeTask, timeoutPill]);
+    outcome = await probeTask;
   } catch {
     outcome = { verdict: "timeout" };
   }
