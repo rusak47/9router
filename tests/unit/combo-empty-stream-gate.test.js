@@ -206,6 +206,42 @@ describe("combo empty-stream gate (Mechanism B, #3463)", () => {
     expect(text).toContain("content");
   });
 
+  it("rejectEmptyStream: reasoning-only stream with pre-content error → rejects with synthesized 503 (silence-based gate)", async () => {
+    // Simulates: many reasoning frames (delta.content="", delta.reasoning+reasoning_details present)
+    // arriving over > silence window, then a pre-content error frame, then [DONE].
+    // Under current elapsed-time gate: 500ms timeout fires open → passThrough → rejected=false (FAIL).
+    // Under silence-based gate: each reasoning frame resets silence timer, error caught → rejected=true (PASS).
+    const reasoningFrames = Array.from({ length: 8 }, (_, i) =>
+      `data: {"id":"gen-${Date.now()}-${i}","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"token ${i}","reasoning_details":[{"type":"reasoning.text","text":"token ${i}","format":"unknown","index":0}]},"finish_reason":null}]}\n\n`
+    ).join("");
+    const errorFrame = 'data: {"error":{"code":503,"message":"The upstream provider timed out","type":"timeout"}}\n\n';
+    const doneFrame = "data: [DONE]\n\n";
+
+    let frameIndex = 0;
+    const allFrames = [...reasoningFrames.split("\n\n").filter(Boolean), errorFrame, doneFrame];
+
+    const slowReasoningThenError = new Response(
+      new ReadableStream({
+        async start(controller) {
+          for (const frame of allFrames) {
+            controller.enqueue(new TextEncoder().encode(frame + "\n\n"));
+            // Space frames ~30ms apart; silence window 100ms means timer resets on each frame
+            await new Promise(r => setTimeout(r, 30));
+          }
+          controller.close();
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } }
+    );
+
+    const { response, rejected, message } = await rejectEmptyStream(slowReasoningThenError, { timeoutMs: 100 });
+    expect(rejected).toBe(true);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.message).toMatch(/empty stream.*upstream error/);
+    expect(message).toMatch(/upstream error/);
+  });
+
   it("rejectEmptyStream: non-SSE response passed through untouched", async () => {
     const jsonResponse = new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
       headers: { "Content-Type": "application/json" },
