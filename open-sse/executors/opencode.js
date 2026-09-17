@@ -491,6 +491,8 @@ function sanitizeResponsesItems(body) {
     }
     return true;
   });
+
+  return resolved ? translateSessionId(resolved, clientTool) : generateSessionId();
 }
 
 function normalizeOpencodeReasoning(model, body) {
@@ -532,7 +534,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     };
   }
 
-  transformRequest(model, body, stream = true, credentials) {
+  transformRequest(model, body, stream, credentials) {
     // Stash resolved session on per-request credentials object instead
     // of instance field: OpenCodeExecutor is a module-level singleton,
     // concurrent requests would overwrite _currentSessionId between
@@ -592,7 +594,7 @@ export class OpenCodeExecutor extends BaseExecutor {
   // when current IP's budget is exhausted gateway answers
   // 429 FreeUsageLimitError — user picks another node/egress manually.
   async execute(args) {
-    return super.execute(args);
+    return super.execute({ ...args, credentials: this.prepareRequestCredentials(args) });
   }
 
   buildHeaders(credentials, stream = true, url = "") {
@@ -607,7 +609,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     const downstreamReq = normalizeRequestId(lower["x-opencode-request"]);
     const requestId = credentials?.[REQ_FIELD] || downstreamReq || generateRequestId();
 
-const key = credentials?.apiKey;
+    const key = credentials?.apiKey;
 
     // OpenCode Zen's free tier is IP-based (ipRateLimiter.ts: headers.get("x-real-ip")
     // reads the real egress IP). CDN sets x-real-ip to TCP client-supplied IP so
@@ -628,7 +630,7 @@ const key = credentials?.apiKey;
       "x-opencode-request": requestId,
       "x-opencode-project": lower["x-opencode-project"] || "global",
       ...(clientIp ? { "x-real-ip": clientIp } : {}),
-      "Accept": stream ? "text/event-stream" : "*/*",      
+      "Accept": stream ? "text/event-stream" : "*/*",
     };
     if (url.endsWith("/messages")) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
     return headers;
