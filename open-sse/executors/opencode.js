@@ -343,7 +343,7 @@ function resolveOpencodeSession(body, credentials, providerSessionId, clientTool
     let viaManager = null;
     try {
       viaManager = resolveSessionId({
-        headers,
+        headers: headers,
         body,
         connectionId: credentials?.connectionId,
         scope: "opencode",
@@ -476,7 +476,7 @@ export class OpenCodeExecutor extends BaseExecutor {
     // of instance field: OpenCodeExecutor is a module-level singleton,
     // concurrent requests would overwrite _currentSessionId between
     // transformRequest and buildHeaders, bleeding sessions across requests.
-    if (credentials) credentials._opencodeSession = resolveOpencodeSession(body, credentials);
+    if (credentials) credentials[SESSION_FIELD] = resolveOpencodeSession(body, credentials);
     
     if (body && typeof body === "object" && model && !body.model) body.model = model;
     // Zen rejects non-streaming requests on free models with 403 FreeTierError;
