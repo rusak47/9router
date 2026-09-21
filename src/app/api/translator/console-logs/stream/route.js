@@ -1,4 +1,5 @@
 import { getConsoleLogs, getConsoleEmitter, initConsoleLogCapture } from "@/lib/consoleLogBuffer";
+import { CONSOLE_LOG_CONFIG } from "@/shared/constants/config.js";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ export async function GET(request) {
       // Send all buffered logs immediately on connect
       const buffered = getConsoleLogs();
       if (buffered.length > 0) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "init", logs: buffered })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "init", logs: buffered, maxLines: CONSOLE_LOG_CONFIG.maxLines })}\n\n`));
       }
 
       // Push new lines as they arrive

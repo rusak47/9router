@@ -54,8 +54,16 @@ export const API_ENDPOINTS = {
   auth: "/api/auth",
 };
 
+function resolveConsoleLogMaxLines() {
+  const raw = process.env.CONSOLE_LOG_MAX_LINES;
+  if (typeof raw !== "string" || raw.trim() === "") return 200;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 200;
+  return parsed;
+}
+
 export const CONSOLE_LOG_CONFIG = {
-  maxLines: 200,
+  maxLines: resolveConsoleLogMaxLines(),
   pollIntervalMs: 1000,
 };
 
