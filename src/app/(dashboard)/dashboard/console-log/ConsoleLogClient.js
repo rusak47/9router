@@ -23,7 +23,10 @@ function colorLine(line) {
 export default function ConsoleLogClient() {
   const [logs, setLogs] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [maxLines, setMaxLines] = useState(CONSOLE_LOG_CONFIG.maxLines);
   const logRef = useRef(null);
+  const maxLinesRef = useRef(CONSOLE_LOG_CONFIG.maxLines);
+  maxLinesRef.current = maxLines;
 
   const handleClear = async () => {
     try {
@@ -42,16 +45,18 @@ export default function ConsoleLogClient() {
     es.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "init") {
-        setLogs(msg.logs.slice(-CONSOLE_LOG_CONFIG.maxLines));
+        const maxLinesValue = msg.maxLines ?? CONSOLE_LOG_CONFIG.maxLines;
+        setMaxLines(maxLinesValue);
+        setLogs(msg.logs.slice(-maxLinesValue));
       } else if (msg.type === "line") {
         setLogs((prev) => {
           const next = [...prev, msg.line];
-          return next.length > CONSOLE_LOG_CONFIG.maxLines ? next.slice(-CONSOLE_LOG_CONFIG.maxLines) : next;
+          return next.length > maxLinesRef.current ? next.slice(-maxLinesRef.current) : next;
         });
       } else if (msg.type === "lines") {
         setLogs((prev) => {
           const next = [...prev, ...msg.lines];
-          return next.length > CONSOLE_LOG_CONFIG.maxLines ? next.slice(-CONSOLE_LOG_CONFIG.maxLines) : next;
+          return next.length > maxLinesRef.current ? next.slice(-maxLinesRef.current) : next;
         });
       } else if (msg.type === "clear") {
         setLogs([]);
