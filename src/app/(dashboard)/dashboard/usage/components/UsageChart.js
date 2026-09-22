@@ -123,6 +123,7 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState("tokens");
   const [latencyMetric, setLatencyMetric] = useState("total");
+  const [excludedCollapsed, setExcludedCollapsed] = useState(true);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -285,38 +286,48 @@ export default function UsageChart({ period = "7d", tableView = "model", stats }
             </div>
           </div>
           {latency.excluded > 0 && (
-            <div className="rounded-lg border border-border overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="px-3 py-1 text-left text-text-muted font-medium">
-                      Model
-                    </th>
-                    <th className="px-3 py-1 text-right text-text-muted font-medium">
-                      Requests
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latency.noisy.map((e) => (
-                    <tr
-                      key={e.key}
-                      className="border-b border-border/50 last:border-0 hover:bg-bg-hover/50"
-                    >
-                      <td className="px-3 py-1 truncate max-w-[200px]" title={e.key}>
-                        {e.key}
-                      </td>
-                      <td className="px-3 py-1 text-right text-text-muted">
-                        {e.count}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="px-3 py-1 text-text-muted text-xs bg-bg-subtle">
-                {latency.excluded} low-volume models excluded (below 10 requests)
-              </div>
-            </div>
+            <>
+              <button
+                onClick={() => setExcludedCollapsed(!excludedCollapsed)}
+                className="text-xs text-primary hover:underline mt-2 mb-1 inline-block"
+              >
+                {excludedCollapsed ? `Show ${latency.excluded} excluded models` : `Hide ${latency.excluded} excluded models`}
+              </button>
+              {!excludedCollapsed && (
+                <div className="rounded-lg border border-border overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="px-3 py-1 text-left text-text-muted font-medium">
+                          Model
+                        </th>
+                        <th className="px-3 py-1 text-right text-text-muted font-medium">
+                          Requests
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {latency.noisy.map((e) => (
+                        <tr
+                          key={e.key}
+                          className="border-b border-border/50 last:border-0 hover:bg-bg-hover/50"
+                        >
+                          <td className="px-3 py-1 truncate max-w-[200px]" title={e.key}>
+                            {e.key}
+                          </td>
+                          <td className="px-3 py-1 text-right text-text-muted">
+                            {e.count}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="px-3 py-1 text-text-muted text-xs bg-bg-subtle">
+                    {latency.excluded} low-volume models excluded (below 10 requests)
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       ) : !hasData ? (
