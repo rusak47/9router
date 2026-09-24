@@ -369,9 +369,12 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
           }
         }
       }
-    } catch {
-      // Probe decode/read failure must never break the client stream — fail open.
-      return { verdict: "timeout" };
+    } catch (error) {
+      // Probe read/transport failure (e.g. mid-stream abort: TypeError "terminated")
+      // must fail CLOSED so combo fallback can kick in — never fail open onto a
+      // truncated client stream. Legit long-reasoning streams that keep emitting
+      // frames never hit this branch (silence timeout handles them separately).
+      return { verdict: "error", errorText: error.message || String(error) };
     }
     return { verdict: "empty", finishReason: lastFinishReason };
   })();
@@ -379,8 +382,10 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
   let outcome;
   try {
     outcome = await probeTask;
-  } catch {
-    outcome = { verdict: "timeout" };
+  } catch (error) {
+    // probeTask normally catches internally; this outer catch is a safety net for
+    // any unexpected rejection. Fail closed like the inner catch, never open.
+    outcome = { verdict: "error", errorText: error.message || String(error) };
   }
 
   if (outcome.verdict === "content" || outcome.verdict === "timeout") {
