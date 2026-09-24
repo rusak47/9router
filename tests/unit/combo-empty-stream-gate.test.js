@@ -250,4 +250,28 @@ describe("combo empty-stream gate (Mechanism B, #3463)", () => {
     expect(rejected).toBe(false);
     expect(response).toBe(jsonResponse);
   });
+
+  it("rejectEmptyStream: mid-stream transport abort → rejected 503 (fail-closed on read error)", async () => {
+    // Simulates mid-stream transport abort where Fetch.onAborted triggers TypeError: terminated.
+    // The first frame is a role-only chunk (empty). The stream then errors while the probe
+    // is waiting for the next chunk — this is the moment the probeTask catch fires.
+    let errorFn;
+    const abortStream = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'));
+          errorFn = () => controller.error(new TypeError("terminated: operation aborted"));
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } }
+    );
+    // Fire the abort while the probe is idle waiting for the next chunk.
+    setTimeout(errorFn, 10);
+    const { response, rejected } = await rejectEmptyStream(abortStream, { timeoutMs: 50 });
+    expect(rejected).toBe(true);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.message).toMatch(/empty stream/);
+    expect(body.error.message).toMatch(/upstream error/);
+  });
 });
