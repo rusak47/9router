@@ -304,8 +304,8 @@ function classifySseFrame(parsed) {
  * "empty stream" rule so both detection paths converge on COOLDOWN.medium.
  */
 export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GATE_MS } = {}) {
-  const contentType = response.headers?.get?.("content-type") || "";
-  if (!response.body || !contentType.includes("text/event-stream")) {
+  // Non-probeable responses (no body, HEAD requests) pass through unchanged.
+  if (!response.body) {
     return { response, rejected: false };
   }
 
@@ -349,25 +349,42 @@ export async function rejectEmptyStream(response, { timeoutMs = EMPTY_STREAM_GAT
           return { verdict: "timeout" };
         }
         const { done, value } = readOutcome;
-        if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
+        // Pop the last (potentially incomplete) segment into buffer for the next
+        // iteration; on EOF, the remainder is a complete line, so process it.
         buffer = lines.pop() || "";
+        if (done) { lines.push(buffer); buffer = ""; }
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed.startsWith("data:") || trimmed.slice(5).trim() === "[DONE]") continue;
-          const payload = trimmed.slice(5).trim();
-          const kind = readFrame(payload);
-          if (kind === "content") return { verdict: "content" };
-          if (kind === "error") {
-            let errorText = null;
-            try {
-              const msg = JSON.parse(payload)?.error?.message;
-              if (typeof msg === "string") errorText = msg;
-            } catch { /* keep null */ }
-            return { verdict: "error", errorText };
+          if (!trimmed) continue;
+
+          // SSE data: line — parse and classify via classifySseFrame.
+          if (trimmed.startsWith("data:")) {
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            const kind = readFrame(payload);
+            if (kind === "content") return { verdict: "content" };
+            if (kind === "error") {
+              let errorText = null;
+              try {
+                const msg = JSON.parse(payload)?.error?.message;
+                if (typeof msg === "string") errorText = msg;
+              } catch { /* keep null */ }
+              return { verdict: "error", errorText };
+            }
+            // "empty" frame (role-only, finish_reason only, etc.) — continue reading.
+            continue;
           }
+
+          // Non-SSE content: treat any non-comment line as meaningful.
+          // SSE-style keep-alive comments start with ':' (e.g., ": ka").
+          if (trimmed.startsWith(":")) continue; // keep-alive comment
+
+          // Anything else with content is meaningful (raw JSON, NDJSON, etc.).
+          return { verdict: "content" };
         }
+        if (done) break;
       }
     } catch (error) {
       // Probe read/transport failure (e.g. mid-stream abort: TypeError "terminated")

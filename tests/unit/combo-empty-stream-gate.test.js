@@ -242,13 +242,83 @@ describe("combo empty-stream gate (Mechanism B, #3463)", () => {
     expect(message).toMatch(/upstream error/);
   });
 
-  it("rejectEmptyStream: non-SSE response passed through untouched", async () => {
+  it("rejectEmptyStream: non-SSE response with actual JSON content → passes through", async () => {
     const jsonResponse = new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
       headers: { "Content-Type": "application/json" },
     });
     const { response, rejected } = await rejectEmptyStream(jsonResponse);
     expect(rejected).toBe(false);
-    expect(response).toBe(jsonResponse);
+    expect(response.ok).toBe(true);
+    const body = await response.json();
+    expect(body.choices?.[0]?.message?.content).toBe("ok");
+  });
+
+  it("rejectEmptyStream: non-SSE response (application/json) with no content bytes → rejected 503 empty stream", async () => {
+    const emptyJsonResponse = new Response("", {
+      headers: { "Content-Type": "application/json" },
+    });
+    const { response, rejected, message } = await rejectEmptyStream(emptyJsonResponse, { timeoutMs: 100 });
+    expect(rejected).toBe(true);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.message).toMatch(/empty stream/);
+    expect(message).toMatch(/empty stream/);
+  });
+
+  it("rejectEmptyStream: non-SSE response (application/json) with keep-alive frames only (:ka) → rejected 503 empty stream", async () => {
+    // Simulates upstream sending Content-Type: application/json but body is :ka comments
+    const kaFrames = Array.from({ length: 10 }, () => ": ka\n").join("");
+    const kaResponse = new Response(kaFrames, {
+      headers: { "Content-Type": "application/json" },
+    });
+    const { response, rejected, message } = await rejectEmptyStream(kaResponse, { timeoutMs: 100 });
+    expect(rejected).toBe(true);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.message).toMatch(/empty stream/);
+    expect(message).toMatch(/empty stream/);
+  });
+
+  it("rejectEmptyStream: SSE response with keep-alive frames only (:ka) → rejected 503 empty stream", async () => {
+    // SSE with only :ka comments (no data: frames)
+    const kaFrames = Array.from({ length: 10 }, () => ": ka\n").join("");
+    const sseKaResponse = new Response(kaFrames, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const { response, rejected, message } = await rejectEmptyStream(sseKaResponse, { timeoutMs: 100 });
+    expect(rejected).toBe(true);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error.message).toMatch(/empty stream/);
+    expect(message).toMatch(/empty stream/);
+  });
+
+  it("handleComboChat: fails over when upstream sends non-SSE :ka keep-alive frames (silent :ka bug, #99)", async () => {
+    const calls = [];
+    const result = await handleComboChat({
+      body: { model: "combo", stream: true },
+      models: ["broken/model", "healthy/model"],
+      comboStrategy: "fallback",
+      log: { info() {}, warn() {} },
+      handleSingleModel: async (_body, model) => {
+        calls.push(model);
+        if (model.startsWith("broken")) {
+          return new Response(": ka\n: ka\n: ka\n", {
+            headers: { "Content-Type": "application/json" },
+            status: 200,
+          });
+        }
+        return new Response('{"choices":[{"message":{"content":"ok"}}]}', {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        });
+      },
+    });
+
+    expect(calls).toEqual(["broken/model", "healthy/model"]);
+    expect(result.ok).toBe(true);
+    const body = await result.clone().json();
+    expect(body.choices?.[0]?.message?.content).toBe("ok");
   });
 
   it("rejectEmptyStream: mid-stream transport abort → rejected 503 (fail-closed on read error)", async () => {
